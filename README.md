@@ -1,76 +1,113 @@
-## RootPainter
+## RetinaPainter
 
-RootPainter is a GUI-based software tool for the rapid training of deep neural networks for use in image analysis. 
-RootPainter uses a client-server architecture, allowing users with a typical laptop to utilise a GPU on a more computationally powerful server.  
+RetinaPainter is a next-generation interactive annotation platform for training deep learning models on retinal OCT images with minimal labeled data. It extends [RootPainter](https://github.com/Abe404/root_painter) by replacing the scratch-trained U-Net with a [RETFound](https://github.com/rmaphoh/RETFound_MAE) Vision Transformer foundation model backbone, enabling clinically useful segmentation models for novel retinal biomarkers from as few as 100–200 annotated images.
 
-A detailed description is available in the paper published in the New Phytologist  [RootPainter: Deep Learning Segmentation of Biological Images with Corrective Annotation](https://doi.org/10.1111/nph.18387)
+The system retains RootPainter's corrective annotation loop — the clinician paints corrections on the model's predictions and the model retrains in real time — but leverages rich representations pre-trained on 1.6 million retinal images to dramatically reduce the annotation burden.
 
-![RootPainter Interface](https://user-images.githubusercontent.com/376295/224013411-cb44c7c2-5c72-4819-98a3-6c0ab8b9ea4d.png)
+### Background: RootPainter
 
-To see a list of work using (or citing) the RootPainter paper, please see the [google scholar page](https://scholar.google.com/scholar?cites=12740268016453642124)
+RetinaPainter is a fork of [RootPainter](https://github.com/Abe404/root_painter), an open-source GUI tool for segmenting biological images via human-in-the-loop training ([Smith et al., New Phytologist 2022](https://doi.org/10.1111/nph.18387)). RootPainter demonstrated that a few hours of corrective annotation can match fully supervised performance — but it trains a U-Net from scratch on each new task, limiting generalization and requiring dense supervision.
 
-A BioRxiv Pre-print (earlier version of the paper) is available at:
-[https://www.biorxiv.org/content/10.1101/2020.04.16.044461v2](https://www.biorxiv.org/content/10.1101/2020.04.16.044461v2)
+RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [Drakopoulos et al. (2024)](https://doi.org/10.3928/23258160-20240410-01), the interactive loop was used to train the first automated detector for retinal ischemic perivascular lesions (RIPLs) and subretinal drusenoid deposits (SDDs), achieving ~90% and ~92% accuracy respectively with only ~6 hours of annotation time. RetinaPainter aims to push further by combining that corrective paradigm with modern foundation model pretraining.
 
+### What's New in RetinaPainter
 
-### Getting started quickly
+- **Foundation model backbone** — The U-Net is replaced with RETFound ViT-Large, a Vision Transformer pre-trained via masked autoencoder self-supervision on 1.6M unlabeled retinal images. This provides strong inductive priors for retinal structure, enabling better generalization from small datasets. Pass `--model-type retfound` to the trainer to use it.
 
- I suggest the [colab tutorial](https://colab.research.google.com/drive/104narYAvTBt-X4QEDrBSOZm_DRaAKHtA?usp=sharing).
- 
- A  shorter [mini guide](https://github.com/Abe404/root_painter/blob/master/docs/mini_guide.md) is available including more concise instruction, that could be used as reference. I suggest the paper, videos and then colab tutorial to get an idea of how the software interface could be used and then this mini guide for reference to help remember each of the key steps to get from raw data to final measurements. 
- 
+- **Parameter-efficient fine-tuning (planned)** — LoRA adapter layers will be injected into the ViT encoder so that each interactive training step updates only a small fraction of parameters, enabling near-real-time model updates on a desktop GPU.
 
-### Videos
+- **Multi-class segmentation (planned)** — A single model will simultaneously label multiple lesion types (e.g. RIPL + SDD), addressing RootPainter's one-class-per-model limitation.
 
-A 14 minute video showing how to install RootPainter on windows 11 with google drive and google colab is available on [youtube](https://www.youtube.com/watch?v=HuSujZQOkQw). A similar video for macOS is also [now available on youtube](https://youtu.be/rBCkem0ub_I). I suggest watching these videos to help with the installation part of the [colab tutorial](https://colab.research.google.com/drive/104narYAvTBt-X4QEDrBSOZm_DRaAKHtA?usp=sharing).
+- **Curriculum learning (planned)** — A staged training scheduler will present examples in order of difficulty (synthetic lesions → clear real cases → ambiguous cases → confounders), further reducing the labeled data required to reach clinical accuracy.
 
-A video demonstrating how to train and use a model is available to [download](https://nph.onlinelibrary.wiley.com/action/downloadSupplement?doi=10.1111%2Fnph.18387&file=nph18387-sup-0002-VideoS1.mp4)
+### Roadmap
 
-There is another [youtube video](https://www.youtube.com/watch?v=73u73tBvRO4) of a workshop explaining the background behind the software and covering using the colab notebook to train and use a root segmentation model.
+| Phase | Description | Status |
+|---|---|---|
+| 1 | RETFound ViT-Large backbone + segmentation decoder | Complete |
+| 2 | LoRA parameter-efficient fine-tuning | Planned |
+| 3 | Curriculum learning scheduler | Planned |
+| 4 | Multi-class segmentation support | Planned |
 
-### Client Downloads
+---
 
-See [releases](https://github.com/Abe404/root_painter/releases) 
+### Installation
 
-If you are not confident installing and running python applications on the command line then to get started quickly I suggest the [colab tutorial](https://colab.research.google.com/drive/104narYAvTBt-X4QEDrBSOZm_DRaAKHtA?usp=sharing).
+#### Trainer (server)
 
-#### Server setup 
-
-The following instructions are for a local server. If you do not have a suitable NVIDIA GPU (at least 8GB of GPU memory) or a Mac with Apple Silicon, then my current recommendation is to run via Google colab. A publicly available notebook is available at [Google Drive with Google Colab](https://colab.research.google.com/drive/104narYAvTBt-X4QEDrBSOZm_DRaAKHtA?usp=sharing).
-
-Other options to run the server component of RootPainter on a remote machine include the [the sshfs server setup tutorial](https://github.com/Abe404/root_painter/blob/master/docs/server_setup_sshfs.md). You can also use Dropbox instead of sshfs.
-
-
-For the next steps I assume you have a suitable GPU (NVIDIA with CUDA, or Apple Silicon with MPS).
-
-1. To install the RootPainter trainer:
-
-```
-pip install root-painter-trainer
+```bash
+cd trainer
+python -m venv env
+source env/bin/activate   # Windows: env\Scripts\activate
+pip install -r requirements.txt
 ```
 
-2. To run the trainer.  This will first create the sync directory.
+New dependencies added for the RETFound backbone: `timm>=0.9.0` and `huggingface_hub>=0.20.0` (both included in `requirements.txt`). RETFound weights (~330 MB) are downloaded automatically from HuggingFace Hub on first use and cached at `~/.cache/retina_painter/`.
 
+#### Painter (client)
+
+```bash
+cd painter
+python -m venv env
+source env/bin/activate
+pip install -r requirements.txt
 ```
-start-trainer
+
+---
+
+### Running
+
+#### Standard U-Net mode (unchanged from RootPainter)
+
+```bash
+cd trainer/src && python main.py --syncdir ~/root_painter_sync
 ```
 
-Note: if you are installing the RootPainter trainer (server) from scartch on windows 11 I suggest [these linked instructions](docs/windows_11_trainer_install.md).
+Or, after pip install:
 
-You will be prompted to input a location for the sync directory. This is the folder where files are shared between the client and server. I will use ~/root_painter_sync.
-RootPainter will then create some folders inside ~/root_painter_sync.
-The server should print the automatically selected batch size, which should be greater than 0. It will then start watching for instructions from the client.
+```bash
+start-trainer --syncdir ~/root_painter_sync
+```
 
-You should now be able to see the folders created by RootPainter (datasets, instructions and projects) inside ~/Desktop/root_painter_sync on your local machine 
-See [lung tutorial](docs/cxr_lung_tutorial.md) for an example of how to use RootPainter to train a model. I now actually suggest following the [colab tutorial](https://colab.research.google.com/drive/104narYAvTBt-X4QEDrBSOZm_DRaAKHtA?usp=sharing) instructions but using your local setup instead of the colab server, as these are easier to follow than the lung tutorial.
+#### RETFound backbone mode
 
+```bash
+start-trainer --syncdir ~/root_painter_sync --model-type retfound
+```
 
-### Questions and Problems
- 
-The [FAQ](https://github.com/Abe404/root_painter/blob/master/docs/FAQ.md) may  be worth checking before reaching out with any questions you have. If you do have a question you can either email me or post in the [discussions](https://github.com/Abe404/root_painter/discussions). If you have an issue/ have identified a problem with the software then you can [post an issue](https://github.com/Abe404/root_painter/issues).
+On first run this downloads RETFound OCT weights (~330 MB) from HuggingFace Hub. Subsequent runs use the cached file. The trainer will use 224×224 patches (instead of 572×572) and a conservative batch size to accommodate the larger model.
 
+If you are on a machine without internet access, download `RETFound_oct.pth` manually from [rmaphoh/RETFound_MAE](https://github.com/rmaphoh/RETFound_MAE) and place it at `~/.cache/retina_painter/RETFound_oct.pth`.
+
+---
+
+### Testing
+
+```bash
+# Phase 1 — RETFound backbone (no weight download needed, uses random weights)
+cd trainer/tests
+python -m pytest test_retfound.py -v
+
+# Existing unit tests (loss, unet, utilities)
+python -m pytest test_loss.py test_unet.py test_utils.py -v
+```
+
+The `test_retfound.py` suite (11 tests) runs in under 15 seconds and verifies:
+- ViT-Large produces the correct token shape `(B, 196, 1024)`
+- `RETFoundSeg` forward pass: input `(B, 3, 224, 224)` → output `(B, 2, 224, 224)`
+- Softmax probabilities sum to 1 at every pixel
+- Gradients flow through the decoder
+
+---
+
+### References
+
+- Zhou, K. et al. (2023). A foundation model for generalizable disease detection from retinal images. *Nature*, 622, 156–163.
+- Drakopoulos, M. et al. (2024). Machine teaching allows for rapid development of automated systems for retinal lesion detection from small image datasets. *Ophthalmic Surgery, Lasers & Imaging Retina*, 55(8), 475–478.
+- Smith, A.G. et al. (2022). RootPainter: deep learning segmentation of biological images with corrective annotation. *New Phytologist*, 236(2), 774–791.
+
+---
 
 ### Contributions
 
-At this time, I prefer that any potential contributors discuss proposed changes with me before submitting a pull request. I'm aiming to keep the project stable and focused, so I want to fully understand and prioritize any changes as part of an agreed-upon strategy or roadmap.
-
+This is a research fork under active development. Please open an issue or discussion before submitting a pull request.
