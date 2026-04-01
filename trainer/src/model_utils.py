@@ -48,34 +48,55 @@ def get_latest_model_paths(model_dir, k):
     fpaths = [os.path.join(model_dir, f) for f in fnames]
     return fpaths
 
-def load_model(model_path):
-    model = UNetGNRes()
+def _build_model(model_type='unet'):
+    """Instantiate a bare (untrained) model of the requested type."""
+    if model_type == 'retfound':
+        from retfound_model import RETFoundSeg
+        return RETFoundSeg(num_classes=2)
+    return UNetGNRes()
+
+
+def load_model(model_path, model_type='unet'):
+    model = _build_model(model_type)
     try:
-        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.load_state_dict(torch.load(model_path, map_location=device,
+                                         weights_only=False))
         model = torch.nn.DataParallel(model)
-    except:
+    except Exception:
         model = torch.nn.DataParallel(model)
-        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.load_state_dict(torch.load(model_path, map_location=device,
+                                         weights_only=False))
     model.to(device)
     return model
 
-def create_first_model_with_random_weights(model_dir):
-    # used when no model was specified on project creation.
+def create_first_model_with_random_weights(model_dir, model_type='unet'):
+    """
+    Create a model with initial weights and save it to *model_dir*.
+
+    For 'retfound', the ViT encoder is initialised with pretrained RETFound
+    weights (downloaded automatically on first use); the decoder uses random
+    weights.  For 'unet', all weights are random.
+    """
+    if model_type == 'retfound':
+        from retfound_model import RETFoundSeg, download_retfound_weights
+        checkpoint_path = download_retfound_weights()
+        model = RETFoundSeg(num_classes=2, checkpoint_path=checkpoint_path)
+    else:
+        model = UNetGNRes()
+
     model_num = 1
     model_name = str(model_num).zfill(6)
     model_name += '_' + str(int(round(time.time()))) + '.pkl'
-    model = UNetGNRes()
     model = torch.nn.DataParallel(model)
     model_path = os.path.join(model_dir, model_name)
     torch.save(model.state_dict(), model_path)
-
     model.to(device)
     return model
 
 
-def get_prev_model(model_dir):
+def get_prev_model(model_dir, model_type='unet'):
     prev_path = get_latest_model_paths(model_dir, k=1)[0]
-    prev_model = load_model(prev_path)
+    prev_model = load_model(prev_path, model_type=model_type)
     return prev_model, prev_path
 
 def get_val_metrics(cnn, val_annot_dir, dataset_dir, in_w, out_w, bs):
@@ -125,7 +146,7 @@ def get_val_metrics(cnn, val_annot_dir, dataset_dir, in_w, out_w, bs):
 
         image_path = glob.glob(image_path_part + '.*')[0]
         image = im_utils.load_image(image_path)
-        image, pad_settings = im_utils.pad_to_min(image, min_w=572, min_h=572)
+        image, pad_settings = im_utils.pad_to_min(image, min_w=in_w, min_h=in_w)
         predicted = unet_segment(cnn, image, bs, in_w,
                                  out_w, threshold=0.5)
         predicted = im_utils.crop_from_pad_settings(predicted, pad_settings)

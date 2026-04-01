@@ -54,13 +54,15 @@ class Trainer():
     def __init__(self, sync_dir=None, patch_size=572,
                  max_workers=12,
                  max_batch_size=12,
+                 model_type='unet',
                  ):
 
+        self.model_type = model_type
 
-        valid_sizes = get_valid_patch_sizes()
-        assert patch_size in valid_sizes, (f'Specified patch size of {patch_size}'
-                f'is not valid. Valid patch sizes are {valid_sizes}')
-
+        if model_type == 'unet':
+            valid_sizes = get_valid_patch_sizes()
+            assert patch_size in valid_sizes, (f'Specified patch size of {patch_size}'
+                    f'is not valid. Valid patch sizes are {valid_sizes}')
 
         if sync_dir:
             self.sync_dir = sync_dir
@@ -82,9 +84,17 @@ class Trainer():
         self.train_config = None
         self.model = None
         self.first_loop = True
-        self.in_w = patch_size
-        self.out_w = self.in_w - 72
-        mem_per_item = 3800000000
+
+        if model_type == 'retfound':
+            # RETFound uses 224×224 tiles with no valid-convolution crop
+            self.in_w = 224
+            self.out_w = 224
+            # ViT-Large is heavier than U-Net; use a more conservative per-item estimate
+            mem_per_item = 1_500_000_000
+        else:
+            self.in_w = patch_size
+            self.out_w = self.in_w - 72
+            mem_per_item = 3_800_000_000
         total_mem = 0
         self.num_workers=min(multiprocessing.cpu_count(), max_workers)
         print(self.num_workers, 'workers assigned for data loader')
@@ -257,9 +267,11 @@ class Trainer():
                                           self.in_w, self.out_w)
             model_paths = model_utils.get_latest_model_paths(model_dir, 1)
             if model_paths:
-                self.model = model_utils.load_model(model_paths[0])
+                self.model = model_utils.load_model(model_paths[0],
+                                                    model_type=self.model_type)
             else:
-                self.model = create_first_model_with_random_weights(model_dir)
+                self.model = create_first_model_with_random_weights(
+                    model_dir, model_type=self.model_type)
             self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01,
                                              momentum=0.99, nesterov=True)
             self.model.train()
@@ -402,7 +414,8 @@ class Trainer():
                                   val_annot_dir=self.train_config['val_annot_dir'],
                                   dataset_dir=self.train_config['dataset_dir'],
                                   in_w=self.in_w, out_w=self.out_w, bs=self.bs)
-        prev_model, prev_path = model_utils.get_prev_model(model_dir)
+        prev_model, prev_path = model_utils.get_prev_model(model_dir,
+                                                            model_type=self.model_type)
         cur_metrics = get_val_metrics(copy.deepcopy(self.model))
         prev_metrics = get_val_metrics(prev_model)
         self.log_metrics('cur_val', cur_metrics)

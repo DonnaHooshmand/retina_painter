@@ -52,11 +52,18 @@ def main() -> None:
         default=12,
         help="maximum batch size for training",
     )
+    parser.add_argument(
+        "--model-type",
+        default="unet",
+        choices=["unet", "retfound"],
+        help="model backbone to use: 'unet' (default) or 'retfound' (RETFound ViT-Large)",
+    )
 
     args = parser.parse_args()
     trainer = Trainer(sync_dir=args.syncdir, patch_size=args.patchsize,
                       max_workers=args.maxworkers,
-                      max_batch_size=args.maxbatchsize)
+                      max_batch_size=args.maxbatchsize,
+                      model_type=args.model_type)
     trainer.main_loop()
 
 if __name__ == "__main__":
