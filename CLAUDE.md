@@ -4,22 +4,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-RootPainter is a GUI-based tool for training deep neural networks on biological images using corrective annotation (human-in-the-loop). It uses a client-server architecture where the **painter** (PyQt5 GUI client) and **trainer** (PyTorch server) communicate via JSON instruction files in a shared filesystem directory (the "sync directory"). No network protocol is used—communication works over local filesystem, sshfs, Dropbox, or Google Drive.
+**RetinaPainter** is a fork of [RootPainter](https://github.com/Abe404/root_painter) adapted for retinal OCT biomarker detection. It uses a client-server architecture where the **painter** (PyQt5 GUI client) and **trainer** (PyTorch server) communicate via JSON instruction files in a shared filesystem directory (the "sync directory"). No network protocol is used—communication works over local filesystem, sshfs, Dropbox, or Google Drive.
+
+The key departure from RootPainter is the model backend: instead of a U-Net trained from scratch, RetinaPainter uses the **RETFound ViT-Large foundation model** (pre-trained on 1.6M retinal images) as an encoder, with a lightweight convolutional decoder added for pixel-level segmentation. This enables clinically useful models from far fewer labeled examples (~100–200 images vs. thousands).
 
 ## Architecture
 
 **Two independent Python applications:**
 
-- **`painter/`** — PyQt5 desktop GUI. Users annotate images with brush strokes, view model predictions as overlays, and manage projects/datasets. Entry point: `painter/src/main/python/main.py`. Main window class: `root_painter.py`.
-- **`trainer/`** — PyTorch training server. Watches the sync directory for instructions, trains U-Net models, performs segmentation. Entry point: `trainer/src/main.py`. Core loop: `trainer.py` (`Trainer.main_loop()`). Installable as PyPI package `root-painter-trainer`.
+- **`painter/`** — PyQt5 desktop GUI. Users annotate images with brush strokes, view model predictions as overlays, and manage projects/datasets. Entry point: `painter/src/main/python/main.py`. Main window class: `root_painter.py`. **Unchanged from RootPainter.**
+- **`trainer/`** — PyTorch training server. Watches the sync directory for instructions, trains models, performs segmentation. Entry point: `trainer/src/main.py`. Core loop: `trainer.py` (`Trainer.main_loop()`).
 
 **Filesystem-based IPC:** The client writes JSON instruction files to `<syncdir>/instructions/`. The trainer polls for these, processes them (train, segment, etc.), and writes segmentation results back to the project directory. The `instructions.py` module in the painter handles creating these files.
 
 **Workstation mode:** `server_manager.py` in the painter can auto-launch a bundled trainer executable, or in dev mode, launch the trainer from `trainer/env/bin/python`.
 
-**U-Net model** (`unet.py`): Uses Group Normalization (not Batch Norm). Default input patch size 572x572, output 500x500. Valid patch sizes: 572, 556, 540, ..., 28.
+## Models
 
-**Loss** (`loss.py`): Combined 0.7 Dice + 0.3 Cross-Entropy with softmax over 2 channels (foreground/background).
+### U-Net (original, `--model-type unet`, default)
+
+Defined in `unet.py` (`UNetGNRes`). Uses Group Normalization (not Batch Norm) with residual connections. Default input patch size 572×572, output 500×500 (valid convolutions crop 36px per side). Valid patch sizes: 572, 556, 540, ..., 28.
+
+### RETFound ViT-Large (`--model-type retfound`)
+
+Defined across two files:
+
+- **`retfound_vit.py`** — `RETFoundViT`: ViT-Large (patch_size=16, embed_dim=1024, depth=24, num_heads=16) with sin-cos positional embeddings. `forward_features(x)` returns `(B, 196, 1024)` patch tokens (cls token dropped). Weights match the RETFound checkpoint format exactly.
+- **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`rmaphoh/RETFound-MAE`) on first use, caching to `~/.cache/retina_painter/`.
+
+**Key difference:** For retfound, `in_w = out_w = 224` (no valid-convolution crop). The patch-size assertion in `Trainer.__init__` is skipped, and the per-item memory estimate is 1.5 GB (ViT-Large is heavier than U-Net).
+
+**Loss** (`loss.py`): Combined 0.7 Dice + 0.3 Cross-Entropy with softmax over 2 channels (foreground/background). Unchanged for both model types.
+
+## Model Factory Pattern
+
+`model_utils.py` exposes a `_build_model(model_type)` factory used by:
+- `load_model(path, model_type='unet')` — loads saved weights into the right architecture
+- `create_first_model_with_random_weights(model_dir, model_type='unet')` — for retfound, downloads pretrained encoder weights and initializes a random decoder
+- `get_prev_model(model_dir, model_type='unet')` — wraps `load_model`
+
+`Trainer` stores `self.model_type` and passes it through all model-loading calls. The `--model-type` CLI arg in `main.py` sets this.
 
 ## Development Setup
 
@@ -28,10 +52,10 @@ RootPainter is a GUI-based tool for training deep neural networks on biological 
 cd trainer
 python -m venv env
 source env/bin/activate  # or env\Scripts\activate on Windows
-pip install -e .
+pip install -r requirements.txt   # includes timm>=0.9.0 and huggingface_hub>=0.20.0
 pip install pytest
 
-# Painter
+# Painter (unchanged)
 cd painter
 python -m venv env
 source env/bin/activate
@@ -41,13 +65,17 @@ pip install -r requirements.txt
 ## Running
 
 ```bash
-# Trainer (standalone)
+# U-Net mode (default, unchanged from RootPainter)
 cd trainer/src && python main.py --syncdir ~/root_painter_sync
+
+# RETFound mode
+cd trainer/src && python main.py --syncdir ~/root_painter_sync --model-type retfound
 
 # Or via pip entry point after install
 start-trainer --syncdir ~/root_painter_sync
+start-trainer --syncdir ~/root_painter_sync --model-type retfound
 
-# Painter
+# Painter (unchanged)
 cd painter && python src/main/python/main.py
 ```
 
@@ -56,8 +84,11 @@ cd painter && python src/main/python/main.py
 Tests are in `trainer/tests/`. Run from that directory:
 
 ```bash
-# Unit tests (fast, no downloads)
+# RETFound backbone tests (fast, no download — uses random weights)
 cd trainer/tests
+python -m pytest test_retfound.py -v
+
+# Original unit tests (fast, no downloads)
 python -m pytest test_loss.py test_unet.py test_utils.py -v
 
 # Single test
@@ -66,6 +97,8 @@ python -m pytest test_unet.py::TestUNet::test_forward_pass -v
 # Training benchmarks (downloads datasets from Zenodo on first run, slow)
 python -m pytest test_training.py -v -s
 ```
+
+`test_retfound.py` covers: ViT token shape, `RETFoundSeg` forward pass shape, softmax correctness, gradient flow through decoder, and a tiling smoke test (skipped if scikit-image not installed).
 
 ## Linting
 
@@ -105,8 +138,6 @@ The Linux CUDA 12.8 workstation uses custom-built PyTorch wheels with unused CUD
 ./build_custom_torch.sh                         # defaults: v2.7.1 / v0.22.1 / sm 12.0
 ./build_custom_torch.sh v2.8.0 v0.23.0 "12.0"  # specific versions
 MAX_JOBS=16 ./build_custom_torch.sh             # override parallelism
-
-# Or trigger via GitHub Actions: "Build Custom PyTorch Wheel" workflow
 ```
 
 Outputs wheels to `./dist/`. After building, upload to a GitHub release and update the URLs in `trainer/requirements_torch_cu128.txt`.
@@ -115,33 +146,33 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 
 - Do not include `Co-Authored-By` or any Claude attribution in commit messages
 - Python 3.11–3.12 required (`>=3.11,<3.13`)
-- Trainer imports are relative (e.g., `from unet import ...`), not package-qualified—tests and entry points run from `trainer/src/`
-- Batch size is auto-detected from GPU memory (CUDA/MPS/CPU fallback)
-- Contributions require discussion with the maintainer before submitting PRs
+- Trainer imports are relative (e.g., `from unet import ...`), not package-qualified — tests and entry points run from `trainer/src/`
+- Batch size is auto-detected from GPU memory (CUDA/MPS/CPU fallback); retfound uses 1.5 GB/item estimate vs. 3.8 GB/item for unet
+- The painter and JSON instruction format are **unchanged** — all RetinaPainter changes are trainer-side only
 
 ## Current Development Status
 
-### Benchmarks (in progress)
-- All unit tests passing: test_loss.py, test_unet.py, test_instructions.py
-- test_training.py running with Zenodo datasets (biopores, roots/towers, nodules)
-- Biopore corrective benchmark done (5 runs x 60 epochs)
-- Still need: dense roots, corrective roots, dense nodules benchmarks
+### Phase 1: RETFound Backbone — COMPLETE
+- `retfound_vit.py`: ViT-Large encoder matching RETFound checkpoint format
+- `retfound_model.py`: `RETFoundSeg` (encoder + decoder) + weight download helper
+- `main.py`: `--model-type` CLI arg
+- `trainer.py`: model factory, `in_w=out_w=224` for retfound
+- `model_utils.py`: model-type-aware load/create/validate; fixed hardcoded `572` in `get_val_metrics`
+- `requirements.txt`: added `timm>=0.9.0`, `huggingface_hub>=0.20.0`
+- `test_retfound.py`: 11 passing unit tests
 
-### Planned: Model Abstraction
-- Add model_type parameter ("unet" | "mobilesam") with factory function
-- Keep both model classes available, switch via instruction JSON or settings
+### Phase 2: LoRA Fine-Tuning — PLANNED
+- Freeze ViT encoder weights; inject LoRA adapter layers into attention blocks
+- Only LoRA params + decoder trained per interactive step → fast updates on desktop GPU
+- Optimizer may switch from SGD to AdamW with warmup for LoRA
 
-### Planned: MobileSAM Integration
-- Based on evaluation in github.com/sotlampr/seg — full pipeline works for dense segmentation without prompts (pass None to prompt encoder, use SAM's own mask decoder)
-- Open decisions: output format (2-channel softmax vs 1-channel sigmoid), tile size (current 572 vs MobileSAM's 1024), optimizer (SGD vs AdamW with warmup), weight distribution (~40MB mobile_sam.pt)
-- Implementation order: finish UNet benchmarks first, then add abstraction layer, then integrate MobileSAM behind it, then compare
+### Phase 3: Curriculum Learning — PLANNED
+- Staged training scheduler: synthetic lesions → easy real cases → hard cases → confounders
+- User labels certain images as "easy" or "hard"; system schedules training order accordingly
+- Evaluate on RIPL and SDD detection tasks
 
-### Planned: Sigmoid / Single-Channel Output
-- Switch from 2-channel softmax to 1-channel sigmoid (BCE loss)
-- Consistent with MobileSAM's natural output
-- The sigmoid branch has partial work on this
-- Needs benchmarking to confirm no regression
-
-### Planned: Training Stability
-- Observed oscillation when corrective (sparse, BG-heavy) annotations are introduced
-- Two approaches to evaluate: self-distillation from best checkpoint (KL divergence), and EMA of model weights
+### Phase 4: Multi-Class Segmentation — PLANNED
+- Extend decoder output head from 2 channels to N classes
+- Update loss to per-class Dice + cross-entropy
+- Single model simultaneously segments multiple biomarker types (RIPL + SDD)
+- Painter UI changes needed for multi-class overlay colors
