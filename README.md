@@ -85,14 +85,19 @@ start-trainer --syncdir ~/root_painter_sync --model-type retfound
 
 On first run this downloads RETFound OCT weights (~330 MB) from HuggingFace Hub. Subsequent runs use the cached file. The trainer will use 224×224 patches (instead of 572×572) and a conservative batch size to accommodate the larger model.
 
-**RETFound weights require a HuggingFace account and access approval:**
+**RETFound weights require a HuggingFace account and access approval.** Run the setup helper from the repo root:
+
+```bash
+python setup_retfound.py
+```
+
+This will prompt you for a HuggingFace token and download the weights (~330 MB) to `~/.cache/retina_painter/`. The download only happens once.
+
+Manual steps if you prefer:
 1. Create a free account at https://huggingface.co
 2. Request access at https://huggingface.co/YukunZhou/RETFound_mae_natureOCT
-3. Generate a token at https://huggingface.co/settings/tokens (Read access)
-4. Authenticate: `python -c "from huggingface_hub import login; login(token='YOUR_TOKEN')"`
-5. Download: `python -c "from src.retfound_model import download_retfound_weights; download_retfound_weights()"`
-
-The weights are cached at `~/.cache/retina_painter/RETFound_oct.pth` and only downloaded once.
+3. Generate a Read token at https://huggingface.co/settings/tokens
+4. Run `python setup_retfound.py --token YOUR_TOKEN`
 
 ---
 
