@@ -180,7 +180,7 @@ def build_retfound_vit(checkpoint_path=None) -> RETFoundViT:
     )
 
     if checkpoint_path is not None:
-        print(f"Loading RETFound weights from {checkpoint_path}")
+        print(f"Loading RETFound weights from {checkpoint_path} ({checkpoint_path.stat().st_size / 1e9:.1f} GB — please wait)...", flush=True)
         raw = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         # RETFound checkpoints use a 'model' key at the top level
         state_dict = raw.get("model", raw)
@@ -191,9 +191,10 @@ def build_retfound_vit(checkpoint_path=None) -> RETFoundViT:
         }
         msg = model.load_state_dict(encoder_sd, strict=False)
         missing = [k for k in msg.missing_keys if "decoder" not in k]
+        print("  Weights loaded successfully.", flush=True)
         if missing:
-            print(f"  Missing keys after loading: {missing}")
+            print(f"  Missing keys after loading: {missing}", flush=True)
         if msg.unexpected_keys:
-            print(f"  Unexpected keys (ignored): {msg.unexpected_keys}")
+            print(f"  Unexpected keys (ignored): {len(msg.unexpected_keys)} decoder keys dropped.", flush=True)
 
     return model

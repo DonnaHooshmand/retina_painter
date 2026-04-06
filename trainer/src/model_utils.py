@@ -57,6 +57,7 @@ def _build_model(model_type='unet'):
 
 
 def load_model(model_path, model_type='unet'):
+    print(f'Loading {model_type} model from {os.path.basename(model_path)}...', flush=True)
     model = _build_model(model_type)
     try:
         model.load_state_dict(torch.load(model_path, map_location=device,
@@ -67,6 +68,7 @@ def load_model(model_path, model_type='unet'):
         model.load_state_dict(torch.load(model_path, map_location=device,
                                          weights_only=False))
     model.to(device)
+    print(f'Model loaded and moved to {device}.', flush=True)
     return model
 
 def create_first_model_with_random_weights(model_dir, model_type='unet'):
@@ -79,8 +81,11 @@ def create_first_model_with_random_weights(model_dir, model_type='unet'):
     """
     if model_type == 'retfound':
         from retfound_model import RETFoundSeg, download_retfound_weights
+        print('Initialising RETFound model (this may take a moment on first run)...', flush=True)
         checkpoint_path = download_retfound_weights()
+        print('Building RETFoundSeg with pretrained encoder...', flush=True)
         model = RETFoundSeg(num_classes=2, checkpoint_path=checkpoint_path)
+        print('RETFound model ready.', flush=True)
     else:
         model = UNetGNRes()
 
@@ -185,14 +190,14 @@ def save_if_better(model_dir, cur_model, prev_model_path,
     return False
 
 def ensemble_segment(model_paths, image, bs, in_w, out_w,
-                     threshold=0.5):
+                     threshold=0.5, model_type='unet'):
     """ Average predictions from each model specified in model_paths """
     pred_sum = None
     pred_count = 0
     image, pad_settings = im_utils.pad_to_min(image, min_w=in_w, min_h=in_w)
     # then add predictions from the previous models to form an ensemble
     for model_path in model_paths:
-        cnn = load_model(model_path)
+        cnn = load_model(model_path, model_type=model_type)
         preds = unet_segment(cnn, image,
                              bs, in_w, out_w, threshold=None)
         if pred_sum is not None:

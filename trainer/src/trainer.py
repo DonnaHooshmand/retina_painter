@@ -491,7 +491,8 @@ class Trainer():
             # if latest is not found then create a model with random weights
             # and use that.
             if not model_paths:
-                create_first_model_with_random_weights(model_dir)
+                create_first_model_with_random_weights(model_dir,
+                                                       model_type=self.model_type)
                 model_paths = model_utils.get_latest_model_paths(model_dir, 1)
         start = time.time()
         for fname in fnames:
@@ -554,7 +555,8 @@ class Trainer():
                 return
             seg_start = time.time()
             seg_out = ensemble_segment(model_paths, photo, self.bs,
-                                         self.in_w, self.out_w)
+                                         self.in_w, self.out_w,
+                                         model_type=self.model_type)
             print(f'ensemble segment {fname}, dur', round(time.time() - seg_start, 2))
             # catch warnings as low contrast is ok here.
             with warnings.catch_warnings():

@@ -150,10 +150,13 @@ class TrainDataset(Dataset):
         foreground = np.array(annot_tile)[:, :, 0]
         background = np.array(annot_tile)[:, :, 1]
 
-        # Annotion is cropped post augmentation to ensure
+        # Annotation is cropped post augmentation to ensure
         # elastic grid doesn't remove the edges.
-        foreground = foreground[tile_pad:-tile_pad, tile_pad:-tile_pad]
-        background = background[tile_pad:-tile_pad, tile_pad:-tile_pad]
+        # When tile_pad=0 (e.g. RETFound, in_w==out_w) no crop is needed —
+        # avoid [0:-0] which would produce an empty slice.
+        if tile_pad > 0:
+            foreground = foreground[tile_pad:-tile_pad, tile_pad:-tile_pad]
+            background = background[tile_pad:-tile_pad, tile_pad:-tile_pad]
         # mask specified pixels of annotation which are defined
         mask = foreground + background
         mask = mask.astype(np.float32)

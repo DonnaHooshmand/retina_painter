@@ -29,9 +29,9 @@ from retfound_vit import build_retfound_vit
 # Constants
 # ---------------------------------------------------------------------------
 
-RETFOUND_HF_REPO = "YukunZhou/RETFound_mae_natureOCT"
+RETFOUND_HF_REPO = "iszt/RETFound_mae_natureOCT"
 RETFOUND_OCT_FILENAME = "RETFound_oct.pth"
-_MANUAL_DOWNLOAD_URL = "https://huggingface.co/YukunZhou/RETFound_mae_natureOCT"
+_MANUAL_DOWNLOAD_URL = "https://huggingface.co/iszt/RETFound_mae_natureOCT"
 
 
 # ---------------------------------------------------------------------------

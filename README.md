@@ -95,7 +95,7 @@ This will prompt you for a HuggingFace token and download the weights (~330 MB) 
 
 Manual steps if you prefer:
 1. Create a free account at https://huggingface.co
-2. Request access at https://huggingface.co/YukunZhou/RETFound_mae_natureOCT
+2. Request access at https://huggingface.co/iszt/RETFound_mae_natureOCT
 3. Generate a Read token at https://huggingface.co/settings/tokens
 4. Run `python setup_retfound.py --token YOUR_TOKEN`
 

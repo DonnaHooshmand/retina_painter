@@ -30,7 +30,7 @@ Defined in `unet.py` (`UNetGNRes`). Uses Group Normalization (not Batch Norm) wi
 Defined across two files:
 
 - **`retfound_vit.py`** — `RETFoundViT`: ViT-Large (patch_size=16, embed_dim=1024, depth=24, num_heads=16) with sin-cos positional embeddings. `forward_features(x)` returns `(B, 196, 1024)` patch tokens (cls token dropped). Weights match the RETFound checkpoint format exactly.
-- **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`YukunZhou/RETFound_mae_natureOCT`) on first use, caching to `~/.cache/retina_painter/`. **This repo is gated — users must request access at https://huggingface.co/YukunZhou/RETFound_mae_natureOCT and authenticate via `huggingface_hub.login()` before the automatic download will work.**
+- **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`iszt/RETFound_mae_natureOCT`) on first use, caching to `~/.cache/retina_painter/`. **This repo is gated — users must request access at https://huggingface.co/iszt/RETFound_mae_natureOCT and authenticate via `huggingface_hub.login()` before the automatic download will work.**
 
 **Key difference:** For retfound, `in_w = out_w = 224` (no valid-convolution crop). The patch-size assertion in `Trainer.__init__` is skipped, and the per-item memory estimate is 1.5 GB (ViT-Large is heavier than U-Net).
 
@@ -161,7 +161,7 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 
 ### Phase 1: RETFound Backbone — COMPLETE
 - `retfound_vit.py`: ViT-Large encoder matching RETFound checkpoint format
-- `retfound_model.py`: `RETFoundSeg` (encoder + decoder) + weight download helper; weights sourced from `YukunZhou/RETFound_mae_natureOCT` (gated, requires HuggingFace auth)
+- `retfound_model.py`: `RETFoundSeg` (encoder + decoder) + weight download helper; weights sourced from `iszt/RETFound_mae_natureOCT` (gated, requires HuggingFace auth)
 - `main.py`: `--model-type` CLI arg
 - `src/__init__.py`: `start()` entry point updated to support `--model-type` (matches `main.py`)
 - `trainer.py`: model factory, `in_w=out_w=224` for retfound

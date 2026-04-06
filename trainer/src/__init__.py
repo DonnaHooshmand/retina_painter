@@ -19,6 +19,12 @@ import sys
 from os.path import dirname
 sys.path.append(dirname(__file__)) # find modules in current directory
 
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 import argparse
 
 parser = argparse.ArgumentParser()
