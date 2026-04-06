@@ -30,7 +30,12 @@ Defined in `unet.py` (`UNetGNRes`). Uses Group Normalization (not Batch Norm) wi
 Defined across two files:
 
 - **`retfound_vit.py`** — `RETFoundViT`: ViT-Large (patch_size=16, embed_dim=1024, depth=24, num_heads=16) with sin-cos positional embeddings. `forward_features(x)` returns `(B, 196, 1024)` patch tokens (cls token dropped). Weights match the RETFound checkpoint format exactly.
-- **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`iszt/RETFound_mae_natureOCT`) on first use, caching to `~/.cache/retina_painter/`. **This repo is gated — users must request access at https://huggingface.co/iszt/RETFound_mae_natureOCT and authenticate via `huggingface_hub.login()` before the automatic download will work.**
+- **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`iszt/RETFound_mae_natureOCT`) on first use, caching to `~/.cache/retina_painter/`. **This repo is gated — users must request access at https://huggingface.co/iszt/RETFound_mae_natureOCT and authenticate via `huggingface_hub.login()` before the automatic download will work. In practice, use `setup_retfound.py` which downloads from Google Drive instead.**
+
+**RETFound weight notes:**
+- The checkpoint is a full MAE checkpoint (~3.95 GB), not just encoder weights
+- `iszt/RETFound_mae_natureOCT` uses `model.safetensors` format on HuggingFace (not `.pth`); the `.pth` file is sourced from Google Drive (file ID: `1m6s7QYkjyjJDlpEuXm7Xp3PmjN-elfW2`) via `setup_retfound.py`
+- Loading the checkpoint takes 2–5 minutes on each trainer startup — this is expected due to the file size
 
 **Key difference:** For retfound, `in_w = out_w = 224` (no valid-convolution crop). The patch-size assertion in `Trainer.__init__` is skipped, and the per-item memory estimate is 1.5 GB (ViT-Large is heavier than U-Net).
 
@@ -67,24 +72,34 @@ pip install -r requirements.txt
 - If `env\Scripts\activate` is blocked: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
 - PyTorch cu124 wheels do not exist for torch>=2.7; use cu126: `pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 --index-url https://download.pytorch.org/whl/cu126` before `pip install -r requirements.txt`
 - The `start-trainer` entry point is defined in `trainer/src/__init__.py` (not `main.py`) — both must be kept in sync when adding CLI arguments
-- RETFound weights require HuggingFace authentication; call `from huggingface_hub import login; login(token='...')` before first use
+- RETFound weights require HuggingFace authentication; call `from huggingface_hub import login; login(token='...')` before first use, or use `setup_retfound.py --gdrive` to download from Google Drive without authentication
+- **Windows Smart App Control** may block unsigned CUDA `.dll` and `.pyd` files from PyPI. If you see a `torchvision::nms` error or DLL import failure, run PowerShell **as Administrator** from the repo root and unblock:
+  ```powershell
+  Get-ChildItem -Path "trainer\env\Lib\site-packages\torch\lib" -Filter "*.dll" | Unblock-File
+  Get-ChildItem -Path "trainer\env\Lib\site-packages\torchvision" -Recurse -Filter "*.pyd" | Unblock-File
+  ```
+  Then restart the trainer. If the venv was created inside a OneDrive-synced folder, move the repo to a local path (e.g. `C:\Users\<user>\Desktop\`) and recreate the venv — OneDrive can corrupt venv Scripts paths.
 
 ## Running
 
+**Always run the trainer from `trainer/src/`** — imports are relative and will fail from any other directory.
+
 ```bash
 # U-Net mode (default, unchanged from RootPainter)
-cd trainer/src && python main.py --syncdir ~/root_painter_sync
+cd trainer/src && python -u main.py --syncdir ~/root_painter_sync
 
 # RETFound mode
-cd trainer/src && python main.py --syncdir ~/root_painter_sync --model-type retfound
+cd trainer/src && python -u main.py --syncdir ~/root_painter_sync --model-type retfound
 
 # Or via pip entry point after install
 start-trainer --syncdir ~/root_painter_sync
 start-trainer --syncdir ~/root_painter_sync --model-type retfound
 
 # Painter (unchanged)
-cd painter && python src/main/python/main.py
+cd painter/src/main/python && python main.py
 ```
+
+Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
 ## Testing
 
@@ -156,19 +171,29 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 - Trainer imports are relative (e.g., `from unet import ...`), not package-qualified — tests and entry points run from `trainer/src/`
 - Batch size is auto-detected from GPU memory (CUDA/MPS/CPU fallback); retfound uses 1.5 GB/item estimate vs. 3.8 GB/item for unet
 - The painter and JSON instruction format are **unchanged** — all RetinaPainter changes are trainer-side only
+- `model_type` must be propagated through every model-loading call: `load_model`, `create_first_model_with_random_weights`, `ensemble_segment`, and `get_prev_model`. Omitting it silently loads a UNet instead of RETFound.
+- When `in_w == out_w` (RETFound), `tile_pad = 0`. Guard any annotation crop with `if tile_pad > 0:` — Python's `x[0:-0]` is `x[0:0]` (empty), not a no-op.
 
 ## Current Development Status
 
 ### Phase 1: RETFound Backbone — COMPLETE
-- `retfound_vit.py`: ViT-Large encoder matching RETFound checkpoint format
-- `retfound_model.py`: `RETFoundSeg` (encoder + decoder) + weight download helper; weights sourced from `iszt/RETFound_mae_natureOCT` (gated, requires HuggingFace auth)
+
+**Model and infrastructure:**
+- `retfound_vit.py`: ViT-Large encoder matching RETFound checkpoint format; `flush=True` on all print statements for real-time terminal output
+- `retfound_model.py`: `RETFoundSeg` (encoder + decoder) + weight download helper; weights sourced from Google Drive (`1m6s7QYkjyjJDlpEuXm7Xp3PmjN-elfW2`) via `setup_retfound.py`; HuggingFace fallback available for users with `iszt/RETFound_mae_natureOCT` access
 - `main.py`: `--model-type` CLI arg
-- `src/__init__.py`: `start()` entry point updated to support `--model-type` (matches `main.py`)
+- `src/__init__.py`: `start()` entry point updated to support `--model-type` (matches `main.py`); stdout/stderr reconfigured with `line_buffering=True` for Windows terminal output
 - `trainer.py`: model factory, `in_w=out_w=224` for retfound
-- `model_utils.py`: model-type-aware load/create/validate; fixed hardcoded `572` in `get_val_metrics`
+- `model_utils.py`: model-type-aware load/create/validate; `ensemble_segment()` accepts and propagates `model_type`; progress prints with `flush=True`
 - `trainer/requirements.txt`: added `timm>=0.9.0`, `huggingface_hub>=0.20.0`; pinned `torch==2.8.0+cu126` (cu124 builds unavailable for torch>=2.7)
 - `painter/requirements.txt`: updated `scikit-image`, `scipy`, `matplotlib`, `pyqtgraph`, `PyWavelets`, `qimage2ndarray` for Python 3.12 compatibility
+- `setup_retfound.py`: interactive weight download helper (Google Drive via `gdown`, or HuggingFace token)
 - `test_retfound.py`: 11 passing unit tests
+
+**Bugs fixed:**
+- `datasets.py`: `tile_pad = (in_w - out_w) // 2` is 0 for RETFound; `foreground[0:-0]` produces an empty tensor. Fixed with `if tile_pad > 0:` guard — without this, training crashes with `RuntimeError: tensor size (224) must match tensor b (0)`.
+- `model_utils.py` / `trainer.py`: `ensemble_segment()` was calling `load_model(path)` without `model_type`, silently loading a UNet architecture in RETFound mode and producing a state_dict mismatch error during segmentation. Fixed by adding `model_type` parameter to `ensemble_segment()` and propagating `self.model_type` from `Trainer.segment_file()`.
+- `trainer.py`: `create_first_model_with_random_weights(model_dir)` in `segment()` was missing `model_type=self.model_type`, creating a UNet on first segmentation in RETFound mode. Fixed.
 
 ### Phase 2: LoRA Fine-Tuning — PLANNED
 - Freeze ViT encoder weights; inject LoRA adapter layers into attention blocks

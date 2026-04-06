@@ -33,7 +33,23 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 ### Installation
 
-#### Trainer (server)
+#### Step 1 — Download RETFound weights
+
+Before running in RETFound mode, download the pretrained weights (~3.95 GB) using the setup helper:
+
+```bash
+python setup_retfound.py
+```
+
+This downloads `RETFound_oct.pth` from Google Drive to `~/.cache/retina_painter/`. The download happens only once. Run this from the repo root inside the trainer virtual environment (see below).
+
+If you have HuggingFace access approval for `iszt/RETFound_mae_natureOCT`, you can supply a token instead:
+
+```bash
+python setup_retfound.py --token YOUR_HF_TOKEN
+```
+
+#### Step 2 — Trainer (server)
 
 ```bash
 cd trainer
@@ -42,17 +58,22 @@ source env/bin/activate   # Windows: env\Scripts\activate
 pip install -r requirements.txt
 ```
 
-New dependencies added for the RETFound backbone: `timm>=0.9.0` and `huggingface_hub>=0.20.0` (both included in `requirements.txt`). RETFound weights (~330 MB) are downloaded automatically from HuggingFace Hub on first use and cached at `~/.cache/retina_painter/`.
-
 > **Windows users:** Python 3.12 is required (3.11 no longer provides binary installers; 3.13+ is unsupported). Use `py -3.12 -m venv env` to create the virtual environment, and activate with `env\Scripts\activate`. If activation is blocked, run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` first.
 
-> **PyTorch on Windows:** The `requirements.txt` pins `torch==2.8.0+cu126` for Windows/Linux. Install with:
+> **PyTorch on Windows/Linux (CUDA):** Install PyTorch cu126 before the rest of requirements, since cu124 wheels do not exist for torch>=2.7:
 > ```
 > pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 --index-url https://download.pytorch.org/whl/cu126
 > pip install -r requirements.txt
 > ```
 
-#### Painter (client)
+> **Windows Smart App Control:** If you see a `torchvision::nms` or DLL error on first run, Windows may have blocked the CUDA DLLs. Run PowerShell **as Administrator** from the venv folder and unblock them:
+> ```powershell
+> Get-ChildItem -Path "env\Lib\site-packages\torch\lib" -Filter "*.dll" | Unblock-File
+> Get-ChildItem -Path "env\Lib\site-packages\torchvision" -Recurse -Filter "*.pyd" | Unblock-File
+> ```
+> Then restart the trainer.
+
+#### Step 3 — Painter (client)
 
 ```bash
 cd painter
@@ -65,39 +86,44 @@ pip install -r requirements.txt
 
 ### Running
 
+**Always run the trainer from `trainer/src/`**, not from `trainer/`. The imports are relative and only work from that directory.
+
 #### Standard U-Net mode (unchanged from RootPainter)
 
 ```bash
-cd trainer/src && python main.py --syncdir ~/root_painter_sync
+cd trainer/src
+python -u main.py --syncdir /path/to/sync_dir
 ```
 
-Or, after pip install:
+Or, after `pip install -e .` from the `trainer/` directory:
 
 ```bash
-start-trainer --syncdir ~/root_painter_sync
+start-trainer --syncdir /path/to/sync_dir
 ```
 
 #### RETFound backbone mode
 
 ```bash
-start-trainer --syncdir ~/root_painter_sync --model-type retfound
+cd trainer/src
+python -u main.py --syncdir /path/to/sync_dir --model-type retfound
 ```
 
-On first run this downloads RETFound OCT weights (~330 MB) from HuggingFace Hub. Subsequent runs use the cached file. The trainer will use 224×224 patches (instead of 572×572) and a conservative batch size to accommodate the larger model.
-
-**RETFound weights require a HuggingFace account and access approval.** Run the setup helper from the repo root:
+Or via the entry point:
 
 ```bash
-python setup_retfound.py
+start-trainer --syncdir /path/to/sync_dir --model-type retfound
 ```
 
-This will prompt you for a HuggingFace token and download the weights (~330 MB) to `~/.cache/retina_painter/`. The download only happens once.
+**First-run note:** Loading the RETFound checkpoint (~3.95 GB) takes 2–5 minutes. This is expected — the file is large and loads from disk each time the trainer starts. Once loaded, segmentation runs at roughly 3 seconds per image. Progress prints appear in the terminal during loading.
 
-Manual steps if you prefer:
-1. Create a free account at https://huggingface.co
-2. Request access at https://huggingface.co/iszt/RETFound_mae_natureOCT
-3. Generate a Read token at https://huggingface.co/settings/tokens
-4. Run `python setup_retfound.py --token YOUR_TOKEN`
+#### Painter (client)
+
+```bash
+cd painter/src/main/python
+python main.py
+```
+
+When prompted, point the painter at the same sync directory used when starting the trainer.
 
 ---
 
