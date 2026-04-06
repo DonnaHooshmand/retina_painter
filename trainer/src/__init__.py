@@ -29,13 +29,19 @@ parser.add_argument('--maxbatchsize',
                     type=int,
                     default=12,
                     help='maximum batch size for training')
+parser.add_argument('--model-type',
+                    default='unet',
+                    choices=['unet', 'retfound'],
+                    help="model backbone to use: 'unet' (default) or 'retfound' (RETFound ViT-Large)")
 
 def start():
     from trainer import Trainer
     args = parser.parse_args()
     if args.syncdir:
         trainer = Trainer(sync_dir=args.syncdir,
-                          max_batch_size=args.maxbatchsize)
+                          max_batch_size=args.maxbatchsize,
+                          model_type=args.model_type)
     else:
-        trainer = Trainer(max_batch_size=args.maxbatchsize)
+        trainer = Trainer(max_batch_size=args.maxbatchsize,
+                          model_type=args.model_type)
     trainer.main_loop()

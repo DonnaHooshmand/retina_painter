@@ -44,6 +44,14 @@ pip install -r requirements.txt
 
 New dependencies added for the RETFound backbone: `timm>=0.9.0` and `huggingface_hub>=0.20.0` (both included in `requirements.txt`). RETFound weights (~330 MB) are downloaded automatically from HuggingFace Hub on first use and cached at `~/.cache/retina_painter/`.
 
+> **Windows users:** Python 3.12 is required (3.11 no longer provides binary installers; 3.13+ is unsupported). Use `py -3.12 -m venv env` to create the virtual environment, and activate with `env\Scripts\activate`. If activation is blocked, run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` first.
+
+> **PyTorch on Windows:** The `requirements.txt` pins `torch==2.8.0+cu126` for Windows/Linux. Install with:
+> ```
+> pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+> pip install -r requirements.txt
+> ```
+
 #### Painter (client)
 
 ```bash
@@ -77,7 +85,14 @@ start-trainer --syncdir ~/root_painter_sync --model-type retfound
 
 On first run this downloads RETFound OCT weights (~330 MB) from HuggingFace Hub. Subsequent runs use the cached file. The trainer will use 224×224 patches (instead of 572×572) and a conservative batch size to accommodate the larger model.
 
-If you are on a machine without internet access, download `RETFound_oct.pth` manually from [rmaphoh/RETFound_MAE](https://github.com/rmaphoh/RETFound_MAE) and place it at `~/.cache/retina_painter/RETFound_oct.pth`.
+**RETFound weights require a HuggingFace account and access approval:**
+1. Create a free account at https://huggingface.co
+2. Request access at https://huggingface.co/YukunZhou/RETFound_mae_natureOCT
+3. Generate a token at https://huggingface.co/settings/tokens (Read access)
+4. Authenticate: `python -c "from huggingface_hub import login; login(token='YOUR_TOKEN')"`
+5. Download: `python -c "from src.retfound_model import download_retfound_weights; download_retfound_weights()"`
+
+The weights are cached at `~/.cache/retina_painter/RETFound_oct.pth` and only downloaded once.
 
 ---
 

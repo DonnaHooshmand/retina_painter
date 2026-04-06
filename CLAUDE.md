@@ -30,7 +30,7 @@ Defined in `unet.py` (`UNetGNRes`). Uses Group Normalization (not Batch Norm) wi
 Defined across two files:
 
 - **`retfound_vit.py`** — `RETFoundViT`: ViT-Large (patch_size=16, embed_dim=1024, depth=24, num_heads=16) with sin-cos positional embeddings. `forward_features(x)` returns `(B, 196, 1024)` patch tokens (cls token dropped). Weights match the RETFound checkpoint format exactly.
-- **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`rmaphoh/RETFound-MAE`) on first use, caching to `~/.cache/retina_painter/`.
+- **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`YukunZhou/RETFound_mae_natureOCT`) on first use, caching to `~/.cache/retina_painter/`. **This repo is gated — users must request access at https://huggingface.co/YukunZhou/RETFound_mae_natureOCT and authenticate via `huggingface_hub.login()` before the automatic download will work.**
 
 **Key difference:** For retfound, `in_w = out_w = 224` (no valid-convolution crop). The patch-size assertion in `Trainer.__init__` is skipped, and the per-item memory estimate is 1.5 GB (ViT-Large is heavier than U-Net).
 
@@ -51,16 +51,23 @@ Defined across two files:
 # Trainer
 cd trainer
 python -m venv env
-source env/bin/activate  # or env\Scripts\activate on Windows
+source env/bin/activate  # Windows: env\Scripts\activate (requires RemoteSigned execution policy)
 pip install -r requirements.txt   # includes timm>=0.9.0 and huggingface_hub>=0.20.0
 pip install pytest
 
-# Painter (unchanged)
+# Painter
 cd painter
 python -m venv env
 source env/bin/activate
 pip install -r requirements.txt
 ```
+
+**Windows notes:**
+- Python 3.12 is required on Windows (3.11 no longer has binary installers; use `py -3.12 -m venv env`)
+- If `env\Scripts\activate` is blocked: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
+- PyTorch cu124 wheels do not exist for torch>=2.7; use cu126: `pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 --index-url https://download.pytorch.org/whl/cu126` before `pip install -r requirements.txt`
+- The `start-trainer` entry point is defined in `trainer/src/__init__.py` (not `main.py`) — both must be kept in sync when adding CLI arguments
+- RETFound weights require HuggingFace authentication; call `from huggingface_hub import login; login(token='...')` before first use
 
 ## Running
 
@@ -154,11 +161,13 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 
 ### Phase 1: RETFound Backbone — COMPLETE
 - `retfound_vit.py`: ViT-Large encoder matching RETFound checkpoint format
-- `retfound_model.py`: `RETFoundSeg` (encoder + decoder) + weight download helper
+- `retfound_model.py`: `RETFoundSeg` (encoder + decoder) + weight download helper; weights sourced from `YukunZhou/RETFound_mae_natureOCT` (gated, requires HuggingFace auth)
 - `main.py`: `--model-type` CLI arg
+- `src/__init__.py`: `start()` entry point updated to support `--model-type` (matches `main.py`)
 - `trainer.py`: model factory, `in_w=out_w=224` for retfound
 - `model_utils.py`: model-type-aware load/create/validate; fixed hardcoded `572` in `get_val_metrics`
-- `requirements.txt`: added `timm>=0.9.0`, `huggingface_hub>=0.20.0`
+- `trainer/requirements.txt`: added `timm>=0.9.0`, `huggingface_hub>=0.20.0`; pinned `torch==2.8.0+cu126` (cu124 builds unavailable for torch>=2.7)
+- `painter/requirements.txt`: updated `scikit-image`, `scipy`, `matplotlib`, `pyqtgraph`, `PyWavelets`, `qimage2ndarray` for Python 3.12 compatibility
 - `test_retfound.py`: 11 passing unit tests
 
 ### Phase 2: LoRA Fine-Tuning — PLANNED
