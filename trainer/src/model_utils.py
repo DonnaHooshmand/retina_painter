@@ -53,6 +53,9 @@ def _build_model(model_type='unet'):
     if model_type == 'retfound':
         from retfound_model import RETFoundSeg
         return RETFoundSeg(num_classes=2)
+    if model_type == 'retfound_rfa':
+        from retfound_rfa_model import RETFoundSegRFA
+        return RETFoundSegRFA(num_classes=2)
     return UNetGNRes()
 
 
@@ -86,6 +89,14 @@ def create_first_model_with_random_weights(model_dir, model_type='unet'):
         print('Building RETFoundSeg with pretrained encoder...', flush=True)
         model = RETFoundSeg(num_classes=2, checkpoint_path=checkpoint_path)
         print('RETFound model ready.', flush=True)
+    elif model_type == 'retfound_rfa':
+        from retfound_rfa_model import RETFoundSegRFA
+        from retfound_model import download_retfound_weights
+        print('Initialising RETFound-RFA model (this may take a moment on first run)...', flush=True)
+        checkpoint_path = download_retfound_weights()
+        print('Building RETFoundSegRFA with pretrained encoder + RFA-U-Net decoder...', flush=True)
+        model = RETFoundSegRFA(num_classes=2, checkpoint_path=checkpoint_path)
+        print('RETFound-RFA model ready.', flush=True)
     else:
         model = UNetGNRes()
 

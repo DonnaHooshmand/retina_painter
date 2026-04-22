@@ -25,21 +25,46 @@ The key departure from RootPainter is the model backend: instead of a U-Net trai
 
 Defined in `unet.py` (`UNetGNRes`). Uses Group Normalization (not Batch Norm) with residual connections. Default input patch size 572×572, output 500×500 (valid convolutions crop 36px per side). Valid patch sizes: 572, 556, 540, ..., 28.
 
-### RETFound ViT-Large (`--model-type retfound`)
+### RETFound plain decoder (`--model-type retfound`)
 
 Defined across two files:
 
-- **`retfound_vit.py`** — `RETFoundViT`: ViT-Large (patch_size=16, embed_dim=1024, depth=24, num_heads=16) with sin-cos positional embeddings. `forward_features(x)` returns `(B, 196, 1024)` patch tokens (cls token dropped). Weights match the RETFound checkpoint format exactly.
+- **`retfound_vit.py`** — `RETFoundViT`: ViT-Large (patch_size=16, embed_dim=1024, depth=24, num_heads=16) with sin-cos positional embeddings. `forward_features(x)` returns `(B, 196, 1024)` patch tokens (cls token dropped). Also exposes `forward_multi_features(x, indices)` which captures intermediate block outputs for RFA skip connections. Weights match the RETFound checkpoint format exactly.
 - **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`iszt/RETFound_mae_natureOCT`) on first use, caching to `~/.cache/retina_painter/`. **This repo is gated — users must request access at https://huggingface.co/iszt/RETFound_mae_natureOCT and authenticate via `huggingface_hub.login()` before the automatic download will work. In practice, use `setup_retfound.py` which downloads from Google Drive instead.**
 
-**RETFound weight notes:**
+**Loss** (`loss.py`): Combined 0.7 Dice + 0.3 Cross-Entropy.
+
+### RETFound + RFA-U-Net decoder (`--model-type retfound_rfa`)
+
+Implements the architecture from Hayati et al. (2025) — *RFA-U-Net: A Foundation Model-Driven Approach for Accurate Choroid Segmentation in OCT Imaging* (medRxiv 2025.05.03.25326923). Reference implementation: https://github.com/Alirezahayatimedtech/RFA-U-Net
+
+Defined in **`retfound_rfa_model.py`** — `RETFoundSegRFA`: same RETFound encoder, but uses `forward_multi_features` to capture features at ViT blocks Z6, Z12, Z18, Z24 (indices 5, 11, 17, 23). Each `(B, 196, 1024)` output is reshaped to `(B, 1024, 14, 14)` and fed into a U-Net-style decoder:
+
+| Stage | Input | Skip source | Skip proj | Output |
+|---|---|---|---|---|
+| d1 | z24, 14² | z18 | 1 upstep → 28², 512ch | 28², 512ch |
+| d2 | 28², 512 | z12 | 2 upsteps → 56², 256ch | 56², 256ch |
+| d3 | 56², 256 | z6 | 3 upsteps → 112², 128ch | 112², 128ch |
+| d4 | 112², 128 | — | — | 224², 64ch |
+| out | 224², 64 | — | — | 224², 2 |
+
+Each skip connection passes through an `_AttentionGate` (additive attention: Wg + Ws → ReLU → sigmoid → scale) before concatenation with the upsampled decoder feature.
+
+**Key implementation notes:**
+- `_make_skip_pyramid(in_ch, out_ch, up_steps)` — progressive `ConvTranspose2d` chain to upsample 14→28/56/112 with channel reduction
+- `freeze_encoder_blocks(num_blocks=21)` — freezes first N transformer blocks; leaves decoder + last 3 blocks trainable (matches RFA-U-Net paper)
+- `in_w = out_w = 224`, same tile_pad=0 constraint as `retfound`
+
+**Loss** (`loss.py`): `tversky_loss(predictions, labels, alpha=0.7, beta=0.3, class_weights=(1.0, 2.0))` — upweights false negatives, better for rare/small foreground regions.
+
+**Optimizer**: AdamW (lr=1e-4, weight_decay=1e-4) applied to trainable params only (frozen blocks excluded). `retfound` continues to use SGD.
+
+**RETFound weight notes (shared by both retfound variants):**
 - The checkpoint is a full MAE checkpoint (~3.95 GB), not just encoder weights
 - `iszt/RETFound_mae_natureOCT` uses `model.safetensors` format on HuggingFace (not `.pth`); the `.pth` file is sourced from Google Drive (file ID: `1m6s7QYkjyjJDlpEuXm7Xp3PmjN-elfW2`) via `setup_retfound.py`
 - Loading the checkpoint takes 2–5 minutes on each trainer startup — this is expected due to the file size
 
-**Key difference:** For retfound, `in_w = out_w = 224` (no valid-convolution crop). The patch-size assertion in `Trainer.__init__` is skipped, and the per-item memory estimate is 1.5 GB (ViT-Large is heavier than U-Net).
-
-**Loss** (`loss.py`): Combined 0.7 Dice + 0.3 Cross-Entropy with softmax over 2 channels (foreground/background). Unchanged for both model types.
+**Key difference from retfound:** For both, `in_w = out_w = 224` (no valid-convolution crop). `retfound_rfa` consumes more VRAM due to storing 4 intermediate feature maps; the per-item memory estimate (1.5 GB) is the same conservative value used for plain `retfound`.
 
 ## Model Factory Pattern
 
@@ -88,12 +113,16 @@ pip install -r requirements.txt
 # U-Net mode (default, unchanged from RootPainter)
 cd trainer/src && python -u main.py --syncdir ~/root_painter_sync
 
-# RETFound mode
+# RETFound plain decoder
 cd trainer/src && python -u main.py --syncdir ~/root_painter_sync --model-type retfound
+
+# RETFound + RFA-U-Net attention decoder (recommended for new projects)
+cd trainer/src && python -u main.py --syncdir ~/root_painter_sync --model-type retfound_rfa
 
 # Or via pip entry point after install
 start-trainer --syncdir ~/root_painter_sync
 start-trainer --syncdir ~/root_painter_sync --model-type retfound
+start-trainer --syncdir ~/root_painter_sync --model-type retfound_rfa
 
 # Painter (unchanged)
 cd painter/src/main/python && python main.py
@@ -106,9 +135,12 @@ Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 Tests are in `trainer/tests/`. Run from that directory:
 
 ```bash
-# RETFound backbone tests (fast, no download — uses random weights)
+# RETFound plain decoder tests (fast, no download)
 cd trainer/tests
 python -m pytest test_retfound.py -v
+
+# RFA-U-Net decoder + Tversky loss tests (fast, no download)
+python -m pytest test_retfound_rfa.py -v
 
 # Original unit tests (fast, no downloads)
 python -m pytest test_loss.py test_unet.py test_utils.py -v
@@ -120,7 +152,9 @@ python -m pytest test_unet.py::TestUNet::test_forward_pass -v
 python -m pytest test_training.py -v -s
 ```
 
-`test_retfound.py` covers: ViT token shape, `RETFoundSeg` forward pass shape, softmax correctness, gradient flow through decoder, and a tiling smoke test (skipped if scikit-image not installed).
+`test_retfound.py` covers: ViT token shape, `RETFoundSeg` forward pass shape, softmax correctness, gradient flow through decoder, and a tiling smoke test.
+
+`test_retfound_rfa.py` (15 tests) covers: `forward_multi_features` shape, `RETFoundSegRFA` forward pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing, Tversky loss properties, and a tiling smoke test.
 
 ## Linting
 
@@ -171,12 +205,13 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 - Trainer imports are relative (e.g., `from unet import ...`), not package-qualified — tests and entry points run from `trainer/src/`
 - Batch size is auto-detected from GPU memory (CUDA/MPS/CPU fallback); retfound uses 1.5 GB/item estimate vs. 3.8 GB/item for unet
 - The painter and JSON instruction format are **unchanged** — all RetinaPainter changes are trainer-side only
-- `model_type` must be propagated through every model-loading call: `load_model`, `create_first_model_with_random_weights`, `ensemble_segment`, and `get_prev_model`. Omitting it silently loads a UNet instead of RETFound.
+- `model_type` must be propagated through every model-loading call: `load_model`, `create_first_model_with_random_weights`, `ensemble_segment`, and `get_prev_model`. Omitting it silently loads a UNet instead of RETFound. This applies to all three values: `'unet'`, `'retfound'`, `'retfound_rfa'`.
+- `retfound` and `retfound_rfa` produce **incompatible checkpoints** (different decoder state_dict keys). Never load a `retfound` `.pkl` with `--model-type retfound_rfa` or vice versa — it will silently produce a shape mismatch or wrong architecture.
 - When `in_w == out_w` (RETFound), `tile_pad = 0`. Guard any annotation crop with `if tile_pad > 0:` — Python's `x[0:-0]` is `x[0:0]` (empty), not a no-op.
 
 ## Current Development Status
 
-### Phase 1: RETFound Backbone — COMPLETE
+### Phase 1a: RETFound Backbone — COMPLETE
 
 **Model and infrastructure:**
 - `retfound_vit.py`: ViT-Large encoder matching RETFound checkpoint format; `flush=True` on all print statements for real-time terminal output
@@ -194,6 +229,21 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 - `datasets.py`: `tile_pad = (in_w - out_w) // 2` is 0 for RETFound; `foreground[0:-0]` produces an empty tensor. Fixed with `if tile_pad > 0:` guard — without this, training crashes with `RuntimeError: tensor size (224) must match tensor b (0)`.
 - `model_utils.py` / `trainer.py`: `ensemble_segment()` was calling `load_model(path)` without `model_type`, silently loading a UNet architecture in RETFound mode and producing a state_dict mismatch error during segmentation. Fixed by adding `model_type` parameter to `ensemble_segment()` and propagating `self.model_type` from `Trainer.segment_file()`.
 - `trainer.py`: `create_first_model_with_random_weights(model_dir)` in `segment()` was missing `model_type=self.model_type`, creating a UNet on first segmentation in RETFound mode. Fixed.
+
+### Phase 1b: RFA-U-Net Attention Decoder — COMPLETE
+
+Based on: Hayati, A. et al. (2025). RFA-U-Net: A Foundation Model-Driven Approach for Accurate Choroid Segmentation in OCT Imaging. medRxiv 2025.05.03.25326923. https://doi.org/10.1101/2025.05.03.25326923
+
+**New and modified files:**
+- `retfound_vit.py`: added `forward_multi_features(x, indices)` to expose intermediate ViT block outputs (Z6/Z12/Z18/Z24) for U-Net skip connections without modifying the existing `forward_features` contract
+- `retfound_rfa_model.py` (new): `RETFoundSegRFA` — same RETFound encoder + RFA-U-Net decoder. Key components: `_AttentionGate` (additive attention), `_DecoderBlock` (upconv + attention gate + fuse), `_make_skip_pyramid` (14→28/56/112 px with channel reduction), `RETFoundSegRFA.freeze_encoder_blocks(21)` (freezes first 21 of 24 blocks, last 3 + decoder trainable)
+- `loss.py`: added `tversky_loss(predictions, labels, alpha=0.7, beta=0.3, class_weights=(1.0, 2.0))`
+- `model_utils.py`: `_build_model` and `create_first_model_with_random_weights` handle `retfound_rfa`; reuses `download_retfound_weights()` from `retfound_model`
+- `main.py` + `src/__init__.py`: `--model-type` choices extended to `['unet', 'retfound', 'retfound_rfa']`
+- `trainer.py`: `retfound_rfa` shares `in_w=out_w=224`; uses Tversky loss and AdamW optimizer (lr=1e-4) instead of combined loss + SGD; calls `freeze_encoder_blocks(21)` after first model load
+- `test_retfound_rfa.py` (new): 15 passing unit tests
+
+**Backward compatibility:** `retfound` checkpoints are incompatible with `retfound_rfa` (different decoder keys). Projects must be started fresh with the new `--model-type`. Existing `retfound` projects continue to work unchanged.
 
 ### Phase 2: LoRA Fine-Tuning — PLANNED
 - Freeze ViT encoder weights; inject LoRA adapter layers into attention blocks

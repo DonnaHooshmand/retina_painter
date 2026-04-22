@@ -69,3 +69,46 @@ def combined_loss2(preds, labels, mask=None):
     if torch.sum(labels) > 0:
         return dice_loss2(preds, labels) + cx
     return cx
+
+
+def tversky_loss(predictions, labels, alpha=0.7, beta=0.3,
+                 smooth=1e-6, class_weights=(1.0, 2.0)):
+    """
+    Tversky loss for 2-class segmentation.
+
+    The Tversky index generalises Dice: with ``alpha=beta=0.5`` it equals
+    Dice; setting ``alpha > beta`` weights false negatives more heavily,
+    which is useful when the foreground class is small (as in subtle
+    retinal biomarkers).
+
+    Defaults (``alpha=0.7, beta=0.3, class_weights=(1.0, 2.0)``) match the
+    RFA-U-Net reference implementation.
+
+    Parameters
+    ----------
+    predictions : (B, C, H, W) float tensor
+        Raw logits — softmax is applied internally.
+    labels : (B, H, W) integer tensor
+        Ground-truth class indices (0 = background, 1 = foreground).
+    """
+    assert torch.max(labels) <= 1
+    probs = softmax(predictions, dim=1)
+    # One-hot encode labels to match probs shape
+    num_classes = predictions.shape[1]
+    labels_long = labels.long()
+    # (B, H, W) -> (B, C, H, W)
+    one_hot = torch.zeros_like(probs)
+    one_hot.scatter_(1, labels_long.unsqueeze(1), 1.0)
+
+    weighted_sum = 0.0
+    weight_total = 0.0
+    for c, w in enumerate(class_weights):
+        p = probs[:, c, :, :].contiguous().view(-1)
+        t = one_hot[:, c, :, :].contiguous().view(-1)
+        tp = (p * t).sum()
+        fn = ((1 - p) * t).sum()
+        fp = (p * (1 - t)).sum()
+        tversky = (tp + smooth) / (tp + alpha * fn + beta * fp + smooth)
+        weighted_sum = weighted_sum + float(w) * (1 - tversky)
+        weight_total += float(w)
+    return weighted_sum / max(weight_total, 1e-8)

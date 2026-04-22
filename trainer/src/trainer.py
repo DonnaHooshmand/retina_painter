@@ -35,7 +35,7 @@ import numpy as np
 import torch
 from torch.nn.functional import softmax
 from torch.utils.data import DataLoader
-from loss import combined_loss as criterion
+from loss import combined_loss, tversky_loss
 
 from datasets import TrainDataset
 from metrics import get_metrics, get_metrics_str, get_metric_csv_row
@@ -85,11 +85,11 @@ class Trainer():
         self.model = None
         self.first_loop = True
 
-        if model_type == 'retfound':
-            # RETFound uses 224×224 tiles with no valid-convolution crop
+        if model_type in ('retfound', 'retfound_rfa'):
+            # Both RETFound variants use 224×224 tiles with no valid-convolution crop
             self.in_w = 224
             self.out_w = 224
-            # ViT-Large is heavier than U-Net; use a more conservative per-item estimate
+            # RFA decoder adds attention gates → slightly higher memory than plain retfound
             mem_per_item = 1_500_000_000
         else:
             self.in_w = patch_size
@@ -272,8 +272,19 @@ class Trainer():
             else:
                 self.model = create_first_model_with_random_weights(
                     model_dir, model_type=self.model_type)
-            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01,
-                                             momentum=0.99, nesterov=True)
+
+            if self.model_type == 'retfound_rfa':
+                # Freeze first 21 of 24 encoder blocks per RFA-U-Net paper;
+                # only last 3 blocks + decoder are trained.
+                inner = (self.model.module
+                         if hasattr(self.model, 'module') else self.model)
+                inner.freeze_encoder_blocks(21)
+                trainable = [p for p in self.model.parameters() if p.requires_grad]
+                self.optimizer = torch.optim.AdamW(trainable, lr=1e-4,
+                                                   weight_decay=1e-4)
+            else:
+                self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01,
+                                                 momentum=0.99, nesterov=True)
             self.model.train()
             self.training = True
 
@@ -345,7 +356,10 @@ class Trainer():
             # The network can predict whatever it wants without any penalty.
             outputs[:, 0] *= defined_tiles
             outputs[:, 1] *= defined_tiles
-            loss = criterion(outputs, foreground_tiles)
+            if self.model_type == 'retfound_rfa':
+                loss = tversky_loss(outputs, foreground_tiles.long())
+            else:
+                loss = combined_loss(outputs, foreground_tiles)
             loss.backward()
             self.optimizer.step()
             foreground_probs *= defined_tiles

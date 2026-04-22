@@ -151,6 +151,37 @@ class RETFoundViT(nn.Module):
         x = self.norm(x)
         return x[:, 1:]   # drop cls token → (B, N, D)
 
+    # ------------------------------------------------------------------
+    def forward_multi_features(self, x: torch.Tensor, indices=(5, 11, 17, 23)):
+        """
+        Run the encoder and return intermediate block outputs at the given
+        indices, for use as U-Net-style skip connections (RFA-U-Net).
+
+        The final output in the returned list has the block output at
+        ``indices[-1]`` (not the post-LayerNorm tokens used by
+        ``forward_features``) — this matches the RFA-U-Net reference
+        implementation.
+
+        Args:
+            x: (B, 3, H, W) image tensor in [0, 1] range.
+            indices: block indices to capture (0-indexed).  Default
+                ``(5, 11, 17, 23)`` corresponds to layers Z6/Z12/Z18/Z24.
+
+        Returns:
+            List of tensors, each (B, num_patches, embed_dim); cls token dropped.
+        """
+        x = self.patch_embed(x)
+        cls = self.cls_token.expand(x.shape[0], -1, -1)
+        x = torch.cat([cls, x], dim=1)
+        x = x + self.pos_embed
+        wanted = set(indices)
+        outputs = []
+        for i, blk in enumerate(self.blocks):
+            x = blk(x)
+            if i in wanted:
+                outputs.append(x[:, 1:, :])  # drop cls token
+        return outputs
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.forward_features(x)
 

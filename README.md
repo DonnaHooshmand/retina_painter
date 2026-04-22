@@ -12,7 +12,9 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 ### What's New in RetinaPainter
 
-- **Foundation model backbone** — The U-Net is replaced with RETFound ViT-Large, a Vision Transformer pre-trained via masked autoencoder self-supervision on 1.6M unlabeled retinal images. This provides strong inductive priors for retinal structure, enabling better generalization from small datasets. Pass `--model-type retfound` to the trainer to use it.
+- **Foundation model backbone** — The U-Net is replaced with RETFound ViT-Large, a Vision Transformer pre-trained via masked autoencoder self-supervision on 1.6M unlabeled retinal images. Two segmentation heads are available:
+  - `--model-type retfound` — plain 4-stage transposed-convolution decoder (original RetinaPainter decoder).
+  - `--model-type retfound_rfa` — **RFA-U-Net decoder**: uses four intermediate ViT feature maps (Z6, Z12, Z18, Z24) as U-Net-style skip connections, each passed through a progressive upsampling pyramid and fused via additive attention gates. Achieves Dice 95.04% / Jaccard 90.59% on choroid segmentation vs. all CNN and SOTA baselines (Hayati et al., 2025). Uses Tversky loss (α=0.7, β=0.3) and freezes the first 21 of 24 encoder blocks, training only the last 3 blocks + decoder with AdamW.
 
 - **Parameter-efficient fine-tuning (planned)** — LoRA adapter layers will be injected into the ViT encoder so that each interactive training step updates only a small fraction of parameters, enabling near-real-time model updates on a desktop GPU.
 
@@ -24,7 +26,8 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 | Phase | Description | Status |
 |---|---|---|
-| 1 | RETFound ViT-Large backbone + segmentation decoder | Complete |
+| 1a | RETFound ViT-Large backbone + plain decoder (`retfound`) | Complete |
+| 1b | RFA-U-Net attention decoder (`retfound_rfa`) | Complete |
 | 2 | LoRA parameter-efficient fine-tuning | Planned |
 | 3 | Curriculum learning scheduler | Planned |
 | 4 | Multi-class segmentation support | Planned |
@@ -101,20 +104,29 @@ Or, after `pip install -e .` from the `trainer/` directory:
 start-trainer --syncdir /path/to/sync_dir
 ```
 
-#### RETFound backbone mode
+#### RETFound plain decoder
 
 ```bash
 cd trainer/src
 python -u main.py --syncdir /path/to/sync_dir --model-type retfound
 ```
 
+#### RETFound + RFA-U-Net attention decoder (recommended)
+
+```bash
+cd trainer/src
+python -u main.py --syncdir /path/to/sync_dir --model-type retfound_rfa
+```
+
 Or via the entry point:
 
 ```bash
-start-trainer --syncdir /path/to/sync_dir --model-type retfound
+start-trainer --syncdir /path/to/sync_dir --model-type retfound_rfa
 ```
 
-**First-run note:** Loading the RETFound checkpoint (~3.95 GB) takes 2–5 minutes. This is expected — the file is large and loads from disk each time the trainer starts. Once loaded, segmentation runs at roughly 3 seconds per image. Progress prints appear in the terminal during loading.
+**`retfound_rfa` vs `retfound`:** Both use the same encoder weights and 224×224 tiles. `retfound_rfa` adds a U-Net decoder with skip connections from four intermediate ViT layers and attention gates, uses Tversky loss, and trains with AdamW. It achieves better boundary precision at the cost of slightly higher memory.
+
+**First-run note:** Loading the RETFound checkpoint (~3.95 GB) takes 2–5 minutes on both backends. Progress prints appear in the terminal.
 
 #### Painter (client)
 
@@ -130,25 +142,31 @@ When prompted, point the painter at the same sync directory used when starting t
 ### Testing
 
 ```bash
-# Phase 1 — RETFound backbone (no weight download needed, uses random weights)
+# RETFound plain decoder tests (no weight download needed)
 cd trainer/tests
 python -m pytest test_retfound.py -v
+
+# RFA-U-Net decoder + Tversky loss tests (no weight download needed)
+python -m pytest test_retfound_rfa.py -v
 
 # Existing unit tests (loss, unet, utilities)
 python -m pytest test_loss.py test_unet.py test_utils.py -v
 ```
 
-The `test_retfound.py` suite (11 tests) runs in under 15 seconds and verifies:
-- ViT-Large produces the correct token shape `(B, 196, 1024)`
-- `RETFoundSeg` forward pass: input `(B, 3, 224, 224)` → output `(B, 2, 224, 224)`
-- Softmax probabilities sum to 1 at every pixel
-- Gradients flow through the decoder
+`test_retfound_rfa.py` (15 tests) covers:
+- `forward_multi_features` returns 4 skip tensors of shape `(B, 196, 1024)`
+- `RETFoundSegRFA` forward pass: `(B, 3, 224, 224)` → `(B, 2, 224, 224)`
+- Softmax sums to 1, no NaNs, gradients flow to decoder
+- `freeze_encoder_blocks(21)` correctly freezes first 21 blocks and leaves decoder trainable
+- Tversky loss: scalar output, non-negative, near-zero on perfect predictions, gradients flow
+- Tiling smoke test: 512×512 image tiles correctly to `(512, 512)` output
 
 ---
 
 ### References
 
 - Zhou, K. et al. (2023). A foundation model for generalizable disease detection from retinal images. *Nature*, 622, 156–163.
+- Hayati, A. et al. (2025). RFA-U-Net: A Foundation Model-Driven Approach for Accurate Choroid Segmentation in OCT Imaging. *medRxiv* 2025.05.03.25326923. https://doi.org/10.1101/2025.05.03.25326923
 - Drakopoulos, M. et al. (2024). Machine teaching allows for rapid development of automated systems for retinal lesion detection from small image datasets. *Ophthalmic Surgery, Lasers & Imaging Retina*, 55(8), 475–478.
 - Smith, A.G. et al. (2022). RootPainter: deep learning segmentation of biological images with corrective annotation. *New Phytologist*, 236(2), 774–791.
 

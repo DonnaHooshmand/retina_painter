@@ -37,8 +37,11 @@ parser.add_argument('--maxbatchsize',
                     help='maximum batch size for training')
 parser.add_argument('--model-type',
                     default='unet',
-                    choices=['unet', 'retfound'],
-                    help="model backbone to use: 'unet' (default) or 'retfound' (RETFound ViT-Large)")
+                    choices=['unet', 'retfound', 'retfound_rfa'],
+                    help=(
+                        "model backbone: 'unet' (default), 'retfound' (RETFound + plain decoder), "
+                        "or 'retfound_rfa' (RETFound + RFA-U-Net attention decoder)"
+                    ))
 
 def start():
     from trainer import Trainer
