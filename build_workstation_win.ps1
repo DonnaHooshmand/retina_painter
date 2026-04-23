@@ -49,7 +49,7 @@ Run "painter\env\Scripts\python painter\src\build\run_pyinstaller_workstation.py
 # -----------------------
 $dist = "painter\src\build\dist"
 if (Test-Path $dist) {
-  $zipPath = "RootPainter-Workstation-Windows.zip"
+  $zipPath = "RetinaPainter-Workstation-Windows.zip"
   if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
   Run "powershell -Command `"Compress-Archive -Path '$dist\*' -DestinationPath '$zipPath'`""
   Write-Host "Created $zipPath"

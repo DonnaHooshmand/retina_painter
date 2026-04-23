@@ -228,7 +228,7 @@ class CreateProjectWidget(QtWidgets.QWidget):
                        " be located in this folder."
                        " If you would like to modify your local sync directory"
                        " then this can be done using the 'Specify sync directory'"
-                       " option availble from the extras menu in the RootPainter GUI.")
+                       " option availble from the extras menu in the RetinaPainter GUI.")
         
             QtWidgets.QMessageBox.about(self, 'Project Creation Error', message)
             return

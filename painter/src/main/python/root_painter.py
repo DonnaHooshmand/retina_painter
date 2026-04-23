@@ -549,7 +549,7 @@ class RootPainter(QtWidgets.QMainWindow):
         create_dataset_btn.clicked.connect(show_create_dataset)
         layout.addWidget(create_dataset_btn)
 
-        self.setWindowTitle("RootPainter")
+        self.setWindowTitle("RetinaPainter")
         self.resize(layout.sizeHint())
 
     def open_sync_directory(self):
@@ -732,7 +732,7 @@ class RootPainter(QtWidgets.QMainWindow):
         license_btn.triggered.connect(self.show_license_window)
         help_menu.addAction(license_btn)
 
-        about_btn = QtWidgets.QAction(QtGui.QIcon('missing.png'), 'About RootPainter', self)
+        about_btn = QtWidgets.QAction(QtGui.QIcon('missing.png'), 'About RetinaPainter', self)
         about_btn.triggered.connect(self.show_about_window)
         help_menu.addAction(about_btn)
 
@@ -750,7 +750,7 @@ class RootPainter(QtWidgets.QMainWindow):
 
     def update_window_title(self):
         proj_dirname = os.path.basename(self.proj_location)
-        self.setWindowTitle(f"RootPainter {proj_dirname}"
+        self.setWindowTitle(f"RetinaPainter {proj_dirname}"
                             f" {os.path.basename(self.image_path)}")
 
     def init_active_project_ui(self):

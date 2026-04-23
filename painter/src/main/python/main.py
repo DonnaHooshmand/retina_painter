@@ -14,7 +14,7 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
-print('Initialising RootPainter')
+print('Initialising RetinaPainter')
 #pylint: disable=I1101,C0111,W0201,R0903,E0611,R0902,R0914,W0703
 import sys
 import os
@@ -42,10 +42,10 @@ def init_root_painter():
         if not os.path.isfile(settings_path):
             default_sync = os.path.join(Path.home(), 'root_painter_sync')
             msg = QtWidgets.QMessageBox()
-            msg.setWindowTitle('RootPainter')
+            msg.setWindowTitle('RetinaPainter')
             msg.setText(f'Create sync directory at {default_sync}?')
             msg.setInformativeText(
-                'RootPainter needs a sync directory to store projects, '
+                'RetinaPainter needs a sync directory to store projects, '
                 'datasets and communicate with the training server.')
             msg.setStandardButtons(
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)

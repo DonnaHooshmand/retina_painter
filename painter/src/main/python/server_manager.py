@@ -1,7 +1,7 @@
 """
 server_manager.py
 
-RootPainter Workstation MVP:
+RetinaPainter Workstation MVP:
 - Optionally launches a bundled trainer/server executable from the GUI.
 - Clean dev mode: if running from a source checkout with ../trainer/env/bin/python,
   launch trainer via that venv (no wrapper scripts).
@@ -44,20 +44,20 @@ def find_bundled_trainer() -> Optional[Path]:
 
     Supports:
       - macOS (PyInstaller .app):
-          RootPainter.app/Contents/MacOS/RootPainterTrainerBundle/RootPainterTrainer
+          RetinaPainter.app/Contents/MacOS/RetinaPainterTrainerBundle/RetinaPainterTrainer
           (trainer built in onedir mode, bundled as a folder)
       - legacy single-file helper locations (optional):
-          RootPainter.app/Contents/MacOS/RootPainterTrainer
-          RootPainter.app/Contents/Resources/RootPainterTrainer
+          RetinaPainter.app/Contents/MacOS/RetinaPainterTrainer
+          RetinaPainter.app/Contents/Resources/RetinaPainterTrainer
       - Windows/Linux:
-          <install-dir>/RootPainterTrainer(.exe)
+          <install-dir>/RetinaPainterTrainer(.exe)
     """
-    trainer_name = f"RootPainterTrainer{_exe_suffix()}"
+    trainer_name = f"RetinaPainterTrainer{_exe_suffix()}"
 
     base_dir = Path(sys.executable).resolve().parent  # .../Contents/MacOS
 
     # 1) Workstation: trainer built as onedir, bundled as a folder
-    bundle_candidate = base_dir / "RootPainterTrainerBundle" / trainer_name
+    bundle_candidate = base_dir / "RetinaPainterTrainerBundle" / trainer_name
     if bundle_candidate.is_file():
         return bundle_candidate
 
@@ -269,7 +269,7 @@ class ServerLogDialog(QtWidgets.QDialog):
 
     def __init__(self, server_manager: ServerManager, sync_dir: Path, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("RootPainter Server")
+        self.setWindowTitle("RetinaPainter Server")
         self.resize(900, 500)
 
 

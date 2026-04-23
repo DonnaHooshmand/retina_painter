@@ -31,23 +31,23 @@ deactivate
 # -----------------------
 # Bundle trainer into app
 # -----------------------
-APP="$ROOT/painter/dist/RootPainter.app"
+APP="$ROOT/painter/dist/RetinaPainter.app"
 APP_MACOS="$APP/Contents/MacOS"
 
 # Sanity checks (fail fast, no mystery)
 test -d "$APP" || { echo "ERROR: app not found at: $APP"; exit 1; }
-test -d "$ROOT/trainer/src/dist/RootPainterTrainer" || { echo "ERROR: trainer onedir not found at: $ROOT/trainer/src/dist/RootPainterTrainer"; exit 1; }
-test -f "$ROOT/trainer/src/dist/RootPainterTrainer/RootPainterTrainer" || { echo "ERROR: trainer executable missing inside onedir folder"; exit 1; }
+test -d "$ROOT/trainer/src/dist/RetinaPainterTrainer" || { echo "ERROR: trainer onedir not found at: $ROOT/trainer/src/dist/RetinaPainterTrainer"; exit 1; }
+test -f "$ROOT/trainer/src/dist/RetinaPainterTrainer/RetinaPainterTrainer" || { echo "ERROR: trainer executable missing inside onedir folder"; exit 1; }
 
 # Ensure we don't accidentally launch a stale single-file helper
-rm -f "$APP_MACOS/RootPainterTrainer"
+rm -f "$APP_MACOS/RetinaPainterTrainer"
 
 # Copy the full onedir folder into the app as a bundle folder
-rm -rf "$APP_MACOS/RootPainterTrainerBundle"
-cp -R "$ROOT/trainer/src/dist/RootPainterTrainer" "$APP_MACOS/RootPainterTrainerBundle"
+rm -rf "$APP_MACOS/RetinaPainterTrainerBundle"
+cp -R "$ROOT/trainer/src/dist/RetinaPainterTrainer" "$APP_MACOS/RetinaPainterTrainerBundle"
 
 # Make sure main trainer binary is executable
-chmod +x "$APP_MACOS/RootPainterTrainerBundle/RootPainterTrainer"
+chmod +x "$APP_MACOS/RetinaPainterTrainerBundle/RetinaPainterTrainer"
 
 echo "OK: built workstation app at: $APP"
 

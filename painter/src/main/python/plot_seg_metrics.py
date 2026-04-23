@@ -395,7 +395,7 @@ class MetricsPlot:
         self.plot_window = QtGraphMetricsPlot(
             fnames, metrics_list, rolling_n=30)
         self.plot_window.setWindowTitle(
-            f'RootPainter Metrics Plot: {os.path.basename(csv_fpath)}')
+            f'RetinaPainter Metrics Plot: {os.path.basename(csv_fpath)}')
         self.plot_window.show()
         
 
@@ -427,7 +427,7 @@ class QtGraphMetricsPlot(QtWidgets.QMainWindow):
     def __init__(self, fnames, metrics_list, rolling_n, selected_fname=None):
         super().__init__()
 
-        self.setWindowTitle('RootPainter: Metrics Plot')
+        self.setWindowTitle('RetinaPainter: Metrics Plot')
 
         self.central_widget = QtWidgets.QWidget()
         self.layout = QtWidgets.QGridLayout()
@@ -765,7 +765,7 @@ class QtGraphMetricsPlot(QtWidgets.QMainWindow):
         l = pg.GraphicsLayout(border=None)
         l.setContentsMargins(10, 10, 10, 10)
         view.setCentralItem(l)
-        view.setWindowTitle('RootPainter: Segmentation Metrics')
+        view.setWindowTitle('RetinaPainter: Segmentation Metrics')
         view.resize(800, 600)
         l2 = l.addLayout()
         l2.setContentsMargins(0, 0, 0, 0)

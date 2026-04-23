@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------
-# Build minimal PyTorch + torchvision wheels for RootPainter
+# Build minimal PyTorch + torchvision wheels for RetinaPainter
 #
-# Produces wheels with only the CUDA features RootPainter needs,
+# Produces wheels with only the CUDA features RetinaPainter needs,
 # cutting ~3GB from the workstation bundle.
 #
 # Prerequisites:
@@ -119,7 +119,7 @@ echo ""
 echo "=== Building PyTorch wheel ==="
 TORCH_START=$(date +%s)
 
-# Enable only what RootPainter needs
+# Enable only what RetinaPainter needs
 export USE_CUDA=1
 export USE_CUDNN=1
 export USE_CUBLAS=1
@@ -136,7 +136,7 @@ export USE_CUFFT=0
 export USE_CUSOLVER=0
 export USE_CUFILE=0
 
-# Disable distributed training (RootPainter uses DataParallel, not DDP)
+# Disable distributed training (RetinaPainter uses DataParallel, not DDP)
 export USE_DISTRIBUTED=0
 export USE_TENSORPIPE=0
 export USE_GLOO=0
@@ -240,7 +240,7 @@ if torch.cuda.is_available():
     y_g.sum().backward()
     print('GPU forward+backward: OK')
 
-    # DataParallel + GroupNorm (what RootPainter uses)
+    # DataParallel + GroupNorm (what RetinaPainter uses)
     from torch.nn import Sequential, Conv2d, GroupNorm
     model = torch.nn.DataParallel(Sequential(Conv2d(3, 16, 3), GroupNorm(4, 16)))
     model.to(device)

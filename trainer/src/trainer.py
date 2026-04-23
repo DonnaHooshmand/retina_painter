@@ -505,7 +505,7 @@ class Trainer():
             self.apply_model_type(segment_config['model_type'])
         in_dir = segment_config['dataset_dir']
         seg_dir = segment_config['seg_dir']
-        format_str = 'RootPainter Default (.png)'
+        format_str = 'RetinaPainter Default (.png)'
         if 'format' in segment_config:
             format_str = segment_config['format']
         

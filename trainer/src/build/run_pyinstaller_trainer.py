@@ -145,7 +145,7 @@ if sys.platform == "linux" and shutil.which("gcc") and shutil.which("nm"):
 PyInstaller.__main__.run([
     "--noconfirm",
     "--clean",
-    "--name", "RootPainterTrainer",
+    "--name", "RetinaPainterTrainer",
     "--console",
 
     # CRITICAL: make trainer/src importable during analysis (so 'trainer.py' is found)
@@ -182,7 +182,7 @@ PyInstaller.__main__.run([
     str(ENTRY),
 ])
 
-BUNDLE = DIST / "RootPainterTrainer"
+BUNDLE = DIST / "RetinaPainterTrainer"
 print("Built:", BUNDLE)
 
 # ---------------------------------------------------------------------------

@@ -19,11 +19,11 @@ VERSION=$(grep -oP 'Version: \K[0-9.]+' "$ROOT/painter/src/main/python/about.py"
 case "$VARIANT" in
   rtx50)
     REQUIREMENTS="requirements_torch_cu128.txt"
-    APPIMAGE_NAME="RootPainterWorkstation_${VERSION}_Ubuntu_CUDA128_RTX50.AppImage"
+    APPIMAGE_NAME="RetinaPainterWorkstation_${VERSION}_Ubuntu_CUDA128_RTX50.AppImage"
     ;;
   broad)
     REQUIREMENTS="requirements_torch_cu128_broad.txt"
-    APPIMAGE_NAME="RootPainterWorkstation_${VERSION}_Ubuntu_CUDA128_GTX1660_to_RTX4090.AppImage"
+    APPIMAGE_NAME="RetinaPainterWorkstation_${VERSION}_Ubuntu_CUDA128_GTX1660_to_RTX4090.AppImage"
     ;;
   *)
     echo "ERROR: Unknown variant '$VARIANT'. Use 'rtx50' or 'broad'."
@@ -100,22 +100,22 @@ deactivate
 # --------------------
 # Bundle trainer
 # --------------------
-APP_DIR="$ROOT/painter/dist/RootPainterWorkstation"
+APP_DIR="$ROOT/painter/dist/RetinaPainterWorkstation"
 
-rm -rf "$APP_DIR/RootPainterTrainerBundle"
-cp -R "$ROOT/trainer/src/dist/RootPainterTrainer" \
-      "$APP_DIR/RootPainterTrainerBundle"
+rm -rf "$APP_DIR/RetinaPainterTrainerBundle"
+cp -R "$ROOT/trainer/src/dist/RetinaPainterTrainer" \
+      "$APP_DIR/RetinaPainterTrainerBundle"
 
-chmod +x "$APP_DIR/RootPainterTrainerBundle/RootPainterTrainer"
+chmod +x "$APP_DIR/RetinaPainterTrainerBundle/RetinaPainterTrainer"
 
 # Remove the broken trainer EXE from the workstation spec (painter venv has no torch).
-# The working trainer is in RootPainterTrainerBundle/.
-rm -f "$APP_DIR/RootPainterTrainer"
+# The working trainer is in RetinaPainterTrainerBundle/.
+rm -f "$APP_DIR/RetinaPainterTrainer"
 
 # --------------------
 # AppImage
 # --------------------
-APPDIR="$ROOT/painter/dist/RootPainter.AppDir"
+APPDIR="$ROOT/painter/dist/RetinaPainter.AppDir"
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR"
 
@@ -127,23 +127,23 @@ rmdir "$APP_DIR"
 cat > "$APPDIR/AppRun" << 'APPRUN'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "$0")")"
-exec "$HERE/RootPainter" "$@"
+exec "$HERE/RetinaPainter" "$@"
 APPRUN
 chmod +x "$APPDIR/AppRun"
 
 # Desktop file
-cat > "$APPDIR/RootPainter.desktop" << 'DESKTOP'
+cat > "$APPDIR/RetinaPainter.desktop" << 'DESKTOP'
 [Desktop Entry]
-Name=RootPainter
+Name=RetinaPainter
 Comment=Corrective annotation for biological image segmentation
-Exec=RootPainter
-Icon=RootPainter
+Exec=RetinaPainter
+Icon=RetinaPainter
 Type=Application
 Categories=Science;Education;Graphics;
 DESKTOP
 
 # Icon
-cp "$ROOT/painter/src/main/icons/linux/256.png" "$APPDIR/RootPainter.png"
+cp "$ROOT/painter/src/main/icons/linux/256.png" "$APPDIR/RetinaPainter.png"
 
 # Download appimagetool if not present
 APPIMAGETOOL="$ROOT/painter/dist/appimagetool"

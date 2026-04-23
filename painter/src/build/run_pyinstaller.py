@@ -76,7 +76,7 @@ run_args = [
     # '--debug', 'all', 
 
     # Name to assign to the bundled app and spec file (default: first script’s basename)
-    '--name', 'RootPainter',
+    '--name', 'RetinaPainter',
 
     # I dont think this makes a difference for ubuntu, but I think it will help on OSX.
     # see https://pyinstaller.org/en/stable/usage.html?highlight=icon#cmdoption-i
@@ -109,7 +109,7 @@ else:
 # notation. For example: com.mycompany.department.appname (default: first
 # script’s basename)
 run_args.append('--osx-bundle-identifier')
-run_args.append('com.rootpainter')
+run_args.append('com.retinapainter')
 
 # scriptname: Name of scriptfile to be processed.
 run_args.append(os.path.join('src', 'main', 'python', 'main.py'))
@@ -119,4 +119,4 @@ PyInstaller.__main__.run(run_args)
 # Useful when debugging to see what these folders look like.
 print('list cwd', os.listdir(os.getcwd()))
 print('list cwd/dist', os.listdir(os.path.join(os.getcwd(), 'dist')))
-print('list cwd/dist/RootPainter', os.listdir(os.path.join(os.getcwd(), 'dist', 'RootPainter')))
+print('list cwd/dist/RetinaPainter', os.listdir(os.path.join(os.getcwd(), 'dist', 'RetinaPainter')))
