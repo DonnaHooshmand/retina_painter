@@ -41,6 +41,7 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.proj_name = None
         self.selected_model = None
         self.use_random_weights = True
+        self.model_type = 'unet'
         self.sync_dir = sync_dir
         self.initUI()
 
@@ -52,10 +53,11 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.layout.addWidget(self.name_edit_widget)
 
         self.add_im_dir_widget()
+        self.add_model_type_widget()
         self.add_radio_widget()
         self.add_model_btn()
         if False:
-            self.add_palette_widget() 
+            self.add_palette_widget()
         self.add_info_label()
         self.add_create_btn()
 
@@ -69,6 +71,19 @@ class CreateProjectWidget(QtWidgets.QWidget):
         specify_image_dir_btn = QtWidgets.QPushButton('Specify image directory')
         specify_image_dir_btn.clicked.connect(self.select_photo_dir)
         self.layout.addWidget(specify_image_dir_btn)
+
+    def add_model_type_widget(self):
+        label = QtWidgets.QLabel("Model type:")
+        self.layout.addWidget(label)
+        self.model_type_combo = QtWidgets.QComboBox()
+        self.model_type_combo.addItem("U-Net (original RootPainter)", "unet")
+        self.model_type_combo.addItem("RETFound + plain decoder", "retfound")
+        self.model_type_combo.addItem("RETFound + RFA-U-Net (recommended)", "retfound_rfa")
+        self.model_type_combo.currentIndexChanged.connect(self.on_model_type_changed)
+        self.layout.addWidget(self.model_type_combo)
+
+    def on_model_type_changed(self, index):
+        self.model_type = self.model_type_combo.itemData(index)
 
     def add_radio_widget(self):
         radio_widget = QtWidgets.QWidget()
@@ -260,7 +275,8 @@ class CreateProjectWidget(QtWidgets.QWidget):
             'dataset': str(PurePosixPath(dataset_rel_path)),
             'original_model_file': original_model_file,
             'location': str(PurePosixPath(project_location)),
-            'file_names': all_fnames
+            'file_names': all_fnames,
+            'model_type': self.model_type
         }
         # 'classes': self.palette_edit_widget.get_brush_data()
         with open(proj_file_path, 'w') as json_file:

@@ -58,6 +58,7 @@ class Trainer():
                  ):
 
         self.model_type = model_type
+        self.patch_size = patch_size  # stored so model_type switch can restore unet tile size
 
         if model_type == 'unet':
             valid_sizes = get_valid_patch_sizes()
@@ -256,8 +257,24 @@ class Trainer():
             self.write_message(message)
             self.log(message)
 
+    def apply_model_type(self, model_type):
+        """Switch model type and update tile sizes. Safe to call at any time."""
+        if model_type == self.model_type:
+            return
+        print(f'Switching model type: {self.model_type} -> {model_type}', flush=True)
+        self.model_type = model_type
+        if model_type in ('retfound', 'retfound_rfa'):
+            self.in_w = 224
+            self.out_w = 224
+        else:
+            self.in_w = self.patch_size
+            self.out_w = self.patch_size - 72
+        self.model = None  # force model reload with new architecture
+
     def start_training(self, config):
         if not self.training:
+            if 'model_type' in config:
+                self.apply_model_type(config['model_type'])
             self.train_config = config
             self.epochs_without_progress = 0
             self.msg_dir = self.train_config['message_dir']
@@ -484,6 +501,8 @@ class Trainer():
         TODO: model saving is a counter-intuitve side effect,
         re-think project creation process to avoid this
         """
+        if 'model_type' in segment_config:
+            self.apply_model_type(segment_config['model_type'])
         in_dir = segment_config['dataset_dir']
         seg_dir = segment_config['seg_dir']
         format_str = 'RootPainter Default (.png)'

@@ -98,6 +98,7 @@ class RootPainter(QtWidgets.QMainWindow):
         self.seg_pixmap_holder = None
         self.annot_pixmap_holder = None
 
+        self.model_type = 'unet'  # default; overridden when a project is opened
         self.image_visible = True
         self.seg_visible = False
         self.annot_visible = True
@@ -222,6 +223,7 @@ class RootPainter(QtWidgets.QMainWindow):
         self.model_dir = self.proj_location / 'models'
 
         self.message_dir = self.proj_location / 'messages'
+        self.model_type = settings.get('model_type', 'unet')
 
         self.proj_file_path = proj_file_path
 
@@ -445,7 +447,8 @@ class RootPainter(QtWidgets.QMainWindow):
             "seg_dir": self.seg_dir,
             "file_names": image_fnames,
             "message_dir": self.message_dir,
-            "model_dir": self.model_dir
+            "model_dir": self.model_dir,
+            "model_type": self.model_type
         }
         self.send_instruction('segment', content)
 
@@ -1180,7 +1183,8 @@ class RootPainter(QtWidgets.QMainWindow):
             "val_annot_dir": self.val_annot_dir,
             "seg_dir": self.seg_dir,
             "log_dir": self.log_dir,
-            "message_dir": self.message_dir
+            "message_dir": self.message_dir,
+            "model_type": self.model_type
         }
         self.send_instruction('start_training', content)
 
