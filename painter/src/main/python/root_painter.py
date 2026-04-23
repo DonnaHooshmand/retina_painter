@@ -223,7 +223,9 @@ class RootPainter(QtWidgets.QMainWindow):
         self.model_dir = self.proj_location / 'models'
 
         self.message_dir = self.proj_location / 'messages'
-        self.model_type = settings.get('model_type', 'unet')
+        # None means the project was created before the model-type dropdown;
+        # instructions will omit model_type so the trainer keeps its CLI default.
+        self.model_type = settings.get('model_type', None)
 
         self.proj_file_path = proj_file_path
 
@@ -448,8 +450,9 @@ class RootPainter(QtWidgets.QMainWindow):
             "file_names": image_fnames,
             "message_dir": self.message_dir,
             "model_dir": self.model_dir,
-            "model_type": self.model_type
         }
+        if self.model_type is not None:
+            content["model_type"] = self.model_type
         self.send_instruction('segment', content)
 
     def segment_current_image(self):
@@ -1184,8 +1187,9 @@ class RootPainter(QtWidgets.QMainWindow):
             "seg_dir": self.seg_dir,
             "log_dir": self.log_dir,
             "message_dir": self.message_dir,
-            "model_type": self.model_type
         }
+        if self.model_type is not None:
+            content["model_type"] = self.model_type
         self.send_instruction('start_training', content)
 
     def seg_checkbox_change(self, state):
