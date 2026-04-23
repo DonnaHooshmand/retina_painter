@@ -77,13 +77,13 @@ use_plugin("pil")
 Image.MAX_IMAGE_PIXELS = None
 
 
-class RootPainter(QtWidgets.QMainWindow):
+class RetinaPainter(QtWidgets.QMainWindow):
 
     closed = QtCore.pyqtSignal()
 
     def __init__(self, sync_dir):
         super().__init__()
-        # give the main RootPainter window an Icon.
+        # give the main RetinaPainter window an Icon.
         app_dir = os.path.dirname(os.path.realpath(__file__))
         self.setWindowIcon(QtGui.QIcon(os.path.join(app_dir, 'icons/linux/128.png')))
 
@@ -569,7 +569,7 @@ class RootPainter(QtWidgets.QMainWindow):
             sync directory.
 
         """
-        settings_path = os.path.join(Path.home(), 'root_painter_settings.json')
+        settings_path = os.path.join(Path.home(), 'retina_painter_settings.json')
         dir_path = QtWidgets.QFileDialog.getExistingDirectory()
         if dir_path:
             with open(settings_path, 'w') as json_file:

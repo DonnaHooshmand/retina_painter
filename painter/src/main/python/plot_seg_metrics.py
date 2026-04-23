@@ -635,7 +635,7 @@ class QtGraphMetricsPlot(QtWidgets.QMainWindow):
         self.render_data()
 
     def set_highlight_point(self, highlight_point_fname):
-        # called from update_file in root_painter.py
+        # called from update_file in retina_painter.py
         self.highlight_point_fname = highlight_point_fname
         if self.highlight_point_fname in self.fnames:
 

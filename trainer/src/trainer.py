@@ -69,7 +69,7 @@ class Trainer():
             self.sync_dir = sync_dir
         else:
             self.settings_path = os.path.join(Path.home(),
-                                              'root_painter_settings.json')
+                                              'retina_painter_settings.json')
             startup_setup(self.settings_path)
             self.sync_dir = Path(json.load(open(self.settings_path, 'r'))['sync_dir'])
 

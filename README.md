@@ -12,9 +12,10 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 ### What's New in RetinaPainter
 
-- **Foundation model backbone** — The U-Net is replaced with RETFound ViT-Large, a Vision Transformer pre-trained via masked autoencoder self-supervision on 1.6M unlabeled retinal images. Two segmentation heads are available:
-  - `--model-type retfound` — plain 4-stage transposed-convolution decoder (original RetinaPainter decoder).
-  - `--model-type retfound_rfa` — **RFA-U-Net decoder**: uses four intermediate ViT feature maps (Z6, Z12, Z18, Z24) as U-Net-style skip connections, each passed through a progressive upsampling pyramid and fused via additive attention gates. Achieves Dice 95.04% / Jaccard 90.59% on choroid segmentation vs. all CNN and SOTA baselines (Hayati et al., 2025). Uses Tversky loss (α=0.7, β=0.3) and freezes the first 21 of 24 encoder blocks, training only the last 3 blocks + decoder with AdamW.
+- **Foundation model backbone** — The U-Net is replaced with RETFound ViT-Large, a Vision Transformer pre-trained via masked autoencoder self-supervision on 1.6M unlabeled retinal images. Two segmentation heads are available, selected from a dropdown in the **New Project** dialog:
+  - **U-Net (original RootPainter)** — scratch-trained U-Net with Group Normalization, unchanged from RootPainter.
+  - **RETFound + plain decoder** — plain 4-stage transposed-convolution decoder on top of the frozen ViT encoder.
+  - **RETFound + RFA-U-Net (recommended)** — **RFA-U-Net decoder**: uses four intermediate ViT feature maps (Z6, Z12, Z18, Z24) as U-Net-style skip connections, each passed through a progressive upsampling pyramid and fused via additive attention gates. Achieves Dice 95.04% / Jaccard 90.59% on choroid segmentation vs. all CNN and SOTA baselines (Hayati et al., 2025). Uses Tversky loss (α=0.7, β=0.3) and freezes the first 21 of 24 encoder blocks, training only the last 3 blocks + decoder with AdamW.
 
 - **Parameter-efficient fine-tuning (planned)** — LoRA adapter layers will be injected into the ViT encoder so that each interactive training step updates only a small fraction of parameters, enabling near-real-time model updates on a desktop GPU.
 
@@ -26,8 +27,9 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 | Phase | Description | Status |
 |---|---|---|
-| 1a | RETFound ViT-Large backbone + plain decoder (`retfound`) | Complete |
-| 1b | RFA-U-Net attention decoder (`retfound_rfa`) | Complete |
+| 1a | RETFound ViT-Large backbone + plain decoder | Complete |
+| 1b | RFA-U-Net attention decoder | Complete |
+| 1c | Model type UI dropdown, RetinaPainter rename | Complete |
 | 2 | LoRA parameter-efficient fine-tuning | Planned |
 | 3 | Curriculum learning scheduler | Planned |
 | 4 | Multi-class segmentation support | Planned |
@@ -80,7 +82,7 @@ pip install -r requirements.txt
 
 > **Windows DataLoader workers:** Use `--maxworkers 4` (or lower) when running on Windows to avoid paging file exhaustion during training. The default of 12 workers each importing scipy/skimage simultaneously can exceed available virtual memory:
 > ```
-> python -u main.py --syncdir ... --model-type retfound_rfa --maxworkers 4
+> python -u main.py --syncdir <path> --maxworkers 4
 > ```
 
 #### Step 3 — Painter (client)
@@ -98,11 +100,18 @@ pip install -r requirements.txt
 
 **Always run the trainer from `trainer/src/`**, not from `trainer/`. The imports are relative and only work from that directory.
 
-#### Standard U-Net mode (unchanged from RootPainter)
+#### Start the trainer
 
 ```bash
 cd trainer/src
 python -u main.py --syncdir /path/to/sync_dir
+```
+
+On Windows, add `--maxworkers 4` to avoid paging file exhaustion:
+
+```bash
+cd trainer/src
+python -u main.py --syncdir D:\RootPainterSync --maxworkers 4
 ```
 
 Or, after `pip install -e .` from the `trainer/` directory:
@@ -111,31 +120,15 @@ Or, after `pip install -e .` from the `trainer/` directory:
 start-trainer --syncdir /path/to/sync_dir
 ```
 
-#### RETFound plain decoder
+**Model type is selected per project in the painter UI** — when you create a new project in the painter, a dropdown lets you choose between U-Net, RETFound + plain decoder, or RETFound + RFA-U-Net (recommended). The choice is saved in the project file and automatically sent to the trainer on each train/segment instruction. You do not need to pass `--model-type` on the command line.
 
-```bash
-cd trainer/src
-python -u main.py --syncdir /path/to/sync_dir --model-type retfound
-```
-
-#### RETFound + RFA-U-Net attention decoder (recommended)
-
-```bash
-cd trainer/src
-python -u main.py --syncdir /path/to/sync_dir --model-type retfound_rfa
-```
-
-Or via the entry point:
-
-```bash
-start-trainer --syncdir /path/to/sync_dir --model-type retfound_rfa
-```
+The `--model-type` CLI arg still exists as a server-side default (useful when the trainer is started independently and the painter has not yet sent a project instruction), but it is not normally needed.
 
 **`retfound_rfa` vs `retfound`:** Both use the same encoder weights and 224×224 tiles. `retfound_rfa` adds a U-Net decoder with skip connections from four intermediate ViT layers and attention gates, uses Tversky loss, and trains with AdamW. It achieves better boundary precision at the cost of slightly higher memory.
 
 **First-run note:** Loading the RETFound checkpoint (~3.95 GB) takes 2–5 minutes on both backends. Progress prints appear in the terminal. The first segmentation after startup also loads the model from disk, so expect a similar wait before the first overlay appears.
 
-**Sync directory:** The painter and trainer must use the same sync directory. Without `--syncdir`, the trainer reads the path from `~/root_painter_settings.json` (written by the painter on first run). Store the sync directory on a drive with plenty of free space — each RETFound checkpoint is ~1.2 GB and several accumulate during training.
+**Sync directory:** The painter and trainer must use the same sync directory. On first launch, the painter will ask where to create the sync directory and writes that choice to `~/retina_painter_settings.json`. Store the sync directory on a drive with plenty of free space — each RETFound checkpoint is ~1.2 GB and several accumulate during training.
 
 #### Painter (client)
 

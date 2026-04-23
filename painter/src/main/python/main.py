@@ -23,7 +23,7 @@ import json
 import traceback
 from PyQt5 import QtWidgets
 
-from root_painter import RootPainter
+from retina_painter import RetinaPainter
 
 
 def ensure_sync_dir_ready(sync_dir):
@@ -35,12 +35,12 @@ def ensure_sync_dir_ready(sync_dir):
         os.makedirs(os.path.join(sync_dir, subfolder), exist_ok=True)
 
 
-def init_root_painter():
-    settings_path = os.path.join(Path.home(), 'root_painter_settings.json')
+def init_retina_painter():
+    settings_path = os.path.join(Path.home(), 'retina_painter_settings.json')
     try:
         app = QtWidgets.QApplication([])
         if not os.path.isfile(settings_path):
-            default_sync = os.path.join(Path.home(), 'root_painter_sync')
+            default_sync = os.path.join(Path.home(), 'retina_painter_sync')
             msg = QtWidgets.QMessageBox()
             msg.setWindowTitle('RetinaPainter')
             msg.setText(f'Create sync directory at {default_sync}?')
@@ -65,11 +65,11 @@ def init_root_painter():
         sync_dir = Path(json.load(open(settings_path, 'r'))['sync_dir'])
 
         def reopen():
-            main_window = RootPainter(sync_dir)
+            main_window = RetinaPainter(sync_dir)
             main_window.closed.connect(reopen)
             main_window.show()
 
-        main_window = RootPainter(sync_dir)
+        main_window = RetinaPainter(sync_dir)
         # close project causes reopen with missing project UI
         main_window.closed.connect(reopen)
         main_window.show()
@@ -88,4 +88,4 @@ def init_root_painter():
         sys.exit(exit_code)
 
 if __name__ == '__main__':
-    init_root_painter()
+    init_retina_painter()
