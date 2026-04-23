@@ -505,9 +505,11 @@ class Trainer():
             # if latest is not found then create a model with random weights
             # and use that.
             if not model_paths:
+                print(f'No existing model — creating first model with random weights ({self.model_type})...', flush=True)
                 create_first_model_with_random_weights(model_dir,
                                                        model_type=self.model_type)
                 model_paths = model_utils.get_latest_model_paths(model_dir, 1)
+        print(f'Segmenting {len(fnames)} image(s) using {len(model_paths)} model(s).', flush=True)
         start = time.time()
         for fname in fnames:
             self.segment_file(in_dir, seg_dir, fname,
@@ -560,6 +562,7 @@ class Trainer():
         if not os.path.isfile(fpath):
             print('Cannot segment as missing file', fpath)
         else:
+            print(f'Segmenting {fname}...', flush=True)
             try:
                 photo = load_image(fpath)
             except Exception as e:

@@ -61,9 +61,9 @@ source env/bin/activate   # Windows: env\Scripts\activate
 pip install -r requirements.txt
 ```
 
-> **Windows users:** Python 3.12 is required (3.11 no longer provides binary installers; 3.13+ is unsupported). Use `py -3.12 -m venv env` to create the virtual environment, and activate with `env\Scripts\activate`. If activation is blocked, run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` first.
+> **Windows users:** Python 3.11 or 3.12 is supported (3.13+ is not). Use `py -3.11 -m venv env` or `py -3.12 -m venv env` depending on what is installed. Activate with `env\Scripts\activate`. If activation is blocked, run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` first.
 
-> **PyTorch on Windows/Linux (CUDA):** Install PyTorch cu126 before the rest of requirements, since cu124 wheels do not exist for torch>=2.7:
+> **PyTorch on Windows/Linux (CUDA):** Install PyTorch cu126 before the rest of requirements, since cu124 wheels do not exist for torch>=2.7. The download is ~2.5 GB and can take 10–20 minutes depending on your connection:
 > ```
 > pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 --index-url https://download.pytorch.org/whl/cu126
 > pip install -r requirements.txt
@@ -75,6 +75,13 @@ pip install -r requirements.txt
 > Get-ChildItem -Path "env\Lib\site-packages\torchvision" -Recurse -Filter "*.pyd" | Unblock-File
 > ```
 > Then restart the trainer.
+
+> **Windows virtual memory (paging file):** The RETFound model (~4 GB VRAM) combined with multiple DataLoader workers can exhaust Windows' default paging file. Symptoms are `MemoryError` or `DLL load failed: paging file too small` during training. Fix: move the paging file to a drive with ample free space (e.g. a data drive), and set it to Initial: 16384 MB / Maximum: 32768 MB via `sysdm.cpl` → Advanced → Performance → Virtual Memory. **Do not set a large paging file on a drive with less than 20 GB free** — this will make the system unstable.
+
+> **Windows DataLoader workers:** Use `--maxworkers 4` (or lower) when running on Windows to avoid paging file exhaustion during training. The default of 12 workers each importing scipy/skimage simultaneously can exceed available virtual memory:
+> ```
+> python -u main.py --syncdir ... --model-type retfound_rfa --maxworkers 4
+> ```
 
 #### Step 3 — Painter (client)
 
@@ -126,7 +133,9 @@ start-trainer --syncdir /path/to/sync_dir --model-type retfound_rfa
 
 **`retfound_rfa` vs `retfound`:** Both use the same encoder weights and 224×224 tiles. `retfound_rfa` adds a U-Net decoder with skip connections from four intermediate ViT layers and attention gates, uses Tversky loss, and trains with AdamW. It achieves better boundary precision at the cost of slightly higher memory.
 
-**First-run note:** Loading the RETFound checkpoint (~3.95 GB) takes 2–5 minutes on both backends. Progress prints appear in the terminal.
+**First-run note:** Loading the RETFound checkpoint (~3.95 GB) takes 2–5 minutes on both backends. Progress prints appear in the terminal. The first segmentation after startup also loads the model from disk, so expect a similar wait before the first overlay appears.
+
+**Sync directory:** The painter and trainer must use the same sync directory. Without `--syncdir`, the trainer reads the path from `~/root_painter_settings.json` (written by the painter on first run). Store the sync directory on a drive with plenty of free space — each RETFound checkpoint is ~1.2 GB and several accumulate during training.
 
 #### Painter (client)
 

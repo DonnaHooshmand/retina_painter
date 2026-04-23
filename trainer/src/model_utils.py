@@ -209,6 +209,7 @@ def ensemble_segment(model_paths, image, bs, in_w, out_w,
     # then add predictions from the previous models to form an ensemble
     for model_path in model_paths:
         cnn = load_model(model_path, model_type=model_type)
+        print(f'  Running inference (original)...', flush=True)
         preds = unet_segment(cnn, image,
                              bs, in_w, out_w, threshold=None)
         if pred_sum is not None:
@@ -218,6 +219,7 @@ def ensemble_segment(model_paths, image, bs, in_w, out_w,
         pred_count += 1
         # get flipped version too (test time augmentation)
         flipped_im = np.fliplr(image)
+        print(f'  Running inference (flipped)...', flush=True)
         flipped_pred = unet_segment(cnn, flipped_im, bs, in_w,
                                     out_w, threshold=None)
         pred_sum += np.fliplr(flipped_pred)
@@ -310,6 +312,7 @@ def unet_segment(cnn, image, bs, in_w, out_w, threshold=0.5):
     tiles, coords = im_utils.get_tiles(image,
                                        in_tile_shape=(in_w, in_w, 3),
                                        out_tile_shape=(out_w, out_w))
+    print(f'  {len(tiles)} tile(s) to process...', flush=True)
     tile_idx = 0
     batches = []
     while tile_idx < len(tiles):
@@ -328,7 +331,8 @@ def unet_segment(cnn, image, bs, in_w, out_w, threshold=0.5):
         batches.append(tiles_for_gpu)
 
     output_tiles = []
-    for gpu_tiles in batches:
+    for batch_idx, gpu_tiles in enumerate(batches):
+        print(f'\r  batch {batch_idx + 1}/{len(batches)}', end='', flush=True)
         outputs = cnn(gpu_tiles.to(device))
         softmaxed = softmax(outputs, 1)
         foreground_probs = softmaxed[:, 1, :]  # just the foreground probability.
@@ -343,6 +347,7 @@ def unet_segment(cnn, image, bs, in_w, out_w, threshold=0.5):
         for out_tile in out_tiles:
             output_tiles.append(out_tile)
 
+    print(flush=True)  # newline after batch progress
     assert len(output_tiles) == len(coords), (
         f'{len(output_tiles)} {len(coords)}')
 

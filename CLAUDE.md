@@ -93,9 +93,9 @@ pip install -r requirements.txt
 ```
 
 **Windows notes:**
-- Python 3.12 is required on Windows (3.11 no longer has binary installers; use `py -3.12 -m venv env`)
+- Python 3.11 and 3.12 are both supported on Windows (3.13+ is not). Use `py -3.11 -m venv env` or `py -3.12 -m venv env`
 - If `env\Scripts\activate` is blocked: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
-- PyTorch cu124 wheels do not exist for torch>=2.7; use cu126: `pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 --index-url https://download.pytorch.org/whl/cu126` before `pip install -r requirements.txt`
+- PyTorch cu124 wheels do not exist for torch>=2.7; use cu126: `pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 --index-url https://download.pytorch.org/whl/cu126` before `pip install -r requirements.txt`. The download is ~2.5 GB and can take 10–20 minutes.
 - The `start-trainer` entry point is defined in `trainer/src/__init__.py` (not `main.py`) — both must be kept in sync when adding CLI arguments
 - RETFound weights require HuggingFace authentication; call `from huggingface_hub import login; login(token='...')` before first use, or use `setup_retfound.py --gdrive` to download from Google Drive without authentication
 - **Windows Smart App Control** may block unsigned CUDA `.dll` and `.pyd` files from PyPI. If you see a `torchvision::nms` error or DLL import failure, run PowerShell **as Administrator** from the repo root and unblock:
@@ -104,6 +104,10 @@ pip install -r requirements.txt
   Get-ChildItem -Path "trainer\env\Lib\site-packages\torchvision" -Recurse -Filter "*.pyd" | Unblock-File
   ```
   Then restart the trainer. If the venv was created inside a OneDrive-synced folder, move the repo to a local path (e.g. `C:\Users\<user>\Desktop\`) and recreate the venv — OneDrive can corrupt venv Scripts paths.
+- **Windows paging file:** The RETFound model (~4 GB VRAM) plus DataLoader workers importing scipy/skimage can exhaust the default paging file. Symptoms: `MemoryError` or `DLL load failed: paging file too small`. Fix: move the paging file to a drive with ≥20 GB free and set Initial: 16384 MB / Maximum: 32768 MB via `sysdm.cpl` → Advanced → Performance → Virtual Memory. Never set a large paging file on a nearly-full drive — it causes system instability.
+- **Windows DataLoader workers:** Always use `--maxworkers 4` (or lower) on Windows with RETFound models. The default of 12 workers simultaneously importing large DLLs exhausts virtual memory. Example: `python -u main.py --model-type retfound_rfa --maxworkers 4`
+- **Sync directory and disk space:** Store the sync directory on a drive with ample free space. Each RETFound checkpoint is ~1.2 GB; several accumulate during training. Without `--syncdir`, the trainer reads from `~/root_painter_settings.json` (written by the painter on first run). The painter and trainer must point to the same sync directory or no instructions will be exchanged.
+- **Virtual environment activation:** Always activate the venv before running the trainer (`env\Scripts\activate`). Without it, the system Python (which lacks CUDA-enabled PyTorch) is used and CUDA will show as unavailable.
 
 ## Running
 
