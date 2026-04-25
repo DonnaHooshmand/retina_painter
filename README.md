@@ -23,6 +23,8 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 - **Curriculum learning (planned)** — A staged training scheduler will present examples in order of difficulty (synthetic lesions → clear real cases → ambiguous cases → confounders), further reducing the labeled data required to reach clinical accuracy.
 
+- **Alternative supervision semantics (possible future work)** — The current workflow follows RootPainter's corrective-annotation paradigm, where the clinician labels only errors. A possible future direction is to keep the user interaction sparse but convert the model prediction plus clinician edits into a dense corrected target for training. This could improve sample efficiency once the model is strong enough, but it risks reinforcing missed errors, so it should be treated as an explicit research decision rather than a silent implementation change.
+
 ### Roadmap
 
 | Phase | Description | Status |
@@ -33,6 +35,7 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 | 2 | LoRA parameter-efficient fine-tuning | Planned |
 | 3 | Curriculum learning scheduler | Planned |
 | 4 | Multi-class segmentation support | Planned |
+| 5 | Evaluate dense corrected-target training from sparse edits | Possible future work |
 
 ---
 

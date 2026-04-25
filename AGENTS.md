@@ -264,3 +264,8 @@ Based on: Hayati, A. et al. (2025). RFA-U-Net: A Foundation Model-Driven Approac
 - Update loss to per-class Dice + cross-entropy
 - Single model simultaneously segments multiple biomarker types (RIPL + SDD)
 - Painter UI changes needed for multi-class overlay colors
+
+### Possible Future Direction: Dense Corrected-Target Training
+- The current training flow is intended to remain RootPainter-style corrective annotation, where the user labels only errors rather than drawing dense masks.
+- A possible future research direction is to keep that sparse user interaction but derive a dense training target by starting from the model's previous segmentation and applying the clinician's edits.
+- This is not the current contract and should not be introduced implicitly during bug fixes. Changing from sparse supervision on explicitly corrected pixels to dense corrected-target supervision would be a training-policy change that needs explicit evaluation, especially for tiny retinal biomarkers where missed lesions are easy to reinforce.
