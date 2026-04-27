@@ -13,6 +13,14 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Annotation semantics
+--------------------
+The dataset returns three tensors per tile: ``image``, ``foreground`` (the
+label, 1 where the clinician painted lesion, 0 elsewhere) and ``mask``
+(1 where the pixel is supervised, 0 where it is untouched). Untouched
+pixels must be ignored by the loss — see ``loss.py`` and
+``docs/supervision_plan.md``.
 """
 
 # pylint: disable=C0111, R0913, R0903, R0914, W0511
@@ -157,9 +165,19 @@ class TrainDataset(Dataset):
         if tile_pad > 0:
             foreground = foreground[tile_pad:-tile_pad, tile_pad:-tile_pad]
             background = background[tile_pad:-tile_pad, tile_pad:-tile_pad]
-        # mask specified pixels of annotation which are defined
-        mask = foreground + background
-        mask = mask.astype(np.float32)
+
+        # Sparse-supervision invariant: every pixel is either foreground,
+        # background, or untouched — never both. The painter enforces this
+        # because each pixel of the annotation PNG holds one RGBA value, but
+        # we still assert it here to catch hand-edited files or any future
+        # code path that merges the model's prediction into the annotation
+        # (which would silently produce mask>1 and double-weight pixels).
+        fg_bool = foreground.astype(bool)
+        bg_bool = background.astype(bool)
+        assert not np.any(fg_bool & bg_bool), \
+            f"Annotation has overlapping fg/bg pixels: {fname}"
+        # 1 = supervised pixel (user marked fg or bg); 0 = untouched / ignored.
+        mask = np.logical_or(fg_bool, bg_bool).astype(np.float32)
         mask = torch.from_numpy(mask)
         foreground = foreground.astype(np.int64)
         foreground = torch.from_numpy(foreground)

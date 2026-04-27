@@ -368,15 +368,18 @@ class Trainer():
             softmaxed = softmax(outputs, 1)
             # just the foreground probability.
             foreground_probs = softmaxed[:, 1, :]
-            # remove any of the predictions for which we don't have ground truth
-            # Set outputs to 0 where annotation undefined so that
-            # The network can predict whatever it wants without any penalty.
-            outputs[:, 0] *= defined_tiles
-            outputs[:, 1] *= defined_tiles
+            # Sparse-supervision policy: untouched pixels are masked out
+            # of the loss inside the loss function itself, so they
+            # contribute zero loss and zero gradient. (The previous
+            # `outputs[:, c] *= defined_tiles` trick did not actually
+            # ignore them — softmax(0,0) = (0.5, 0.5) still incurred a
+            # constant ~log(2) CE penalty per untouched pixel.)
             if self.model_type == 'retfound_rfa':
-                loss = tversky_loss(outputs, foreground_tiles.long())
+                loss = tversky_loss(outputs, foreground_tiles.long(),
+                                    mask=defined_tiles)
             else:
-                loss = combined_loss(outputs, foreground_tiles)
+                loss = combined_loss(outputs, foreground_tiles,
+                                     mask=defined_tiles)
             loss.backward()
             self.optimizer.step()
             foreground_probs *= defined_tiles

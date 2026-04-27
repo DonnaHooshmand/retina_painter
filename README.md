@@ -23,7 +23,7 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 - **Curriculum learning (planned)** — A staged training scheduler will present examples in order of difficulty (synthetic lesions → clear real cases → ambiguous cases → confounders), further reducing the labeled data required to reach clinical accuracy.
 
-- **Alternative supervision semantics (possible future work)** — The current workflow follows RootPainter's corrective-annotation paradigm, where the clinician labels only errors. A possible future direction is to keep the user interaction sparse but convert the model prediction plus clinician edits into a dense corrected target for training. This could improve sample efficiency once the model is strong enough, but it risks reinforcing missed errors, so it should be treated as an explicit research decision rather than a silent implementation change.
+- **Annotation semantics: sparse corrective supervision** — Pixels the clinician paints as foreground or background are supervised; untouched pixels are treated as unknown and excluded from the loss with zero gradient and zero loss-value contribution. (Earlier RootPainter code zeroed the logits at untouched pixels but did not actually exclude them from loss — every untouched pixel added a constant CE penalty, slowing training. RetinaPainter's masked loss fixes this; see Phase 1 in [docs/supervision_plan.md](docs/supervision_plan.md).) A future `unsure` annotation category is planned for explicitly ambiguous regions (blurry imagery, hard lesion edges) — also masked from loss but retained as metadata for curriculum learning and uncertainty evaluation. A dense corrected-target alternative remains a possible future research direction but is not the current contract.
 
 ### Roadmap
 
@@ -32,8 +32,10 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 | 1a | RETFound ViT-Large backbone + plain decoder | Complete |
 | 1b | RFA-U-Net attention decoder | Complete |
 | 1c | Model type UI dropdown, RetinaPainter rename | Complete |
-| 2 | LoRA parameter-efficient fine-tuning | Planned |
-| 3 | Curriculum learning scheduler | Planned |
+| 1d | Sparse-supervision masking fix (untouched pixels truly excluded from loss) | Complete |
+| 2a | `unsure` annotation category (painter brush + masked from loss + curriculum metadata) | Planned |
+| 2b | LoRA parameter-efficient fine-tuning | Planned |
+| 3 | Curriculum learning scheduler (driven in part by `unsure` density) | Planned |
 | 4 | Multi-class segmentation support | Planned |
 | 5 | Evaluate dense corrected-target training from sparse edits | Possible future work |
 

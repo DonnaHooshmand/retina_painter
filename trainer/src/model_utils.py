@@ -259,10 +259,10 @@ def epoch(model, train_loader, batch_size,
         # just the foreground probability. (remove soon)
         foreground_probs = softmaxed[:, 1, :]
 
-        outputs[:, 0] *= defined_tiles
-        outputs[:, 1] *= defined_tiles
-
-        loss = criterion(outputs, foreground_tiles.long())
+        # Sparse-supervision policy: pass the mask through to the loss
+        # so untouched pixels contribute zero loss and zero gradient.
+        loss = criterion(outputs, foreground_tiles.long(),
+                         mask=defined_tiles)
 
         loss.backward()
         optimizer.step()
@@ -308,6 +308,12 @@ def unet_segment(cnn, image, bs, in_w, out_w, threshold=0.5):
     """
     assert image.shape[0] >= in_w, str(image.shape[0])
     assert image.shape[1] >= in_w, str(image.shape[1])
+
+    # Move the model to the inference device. Production callers (load_model,
+    # ensemble_segment) already do this, but defensive .to(device) here keeps
+    # tests and any future caller from hitting a CPU-vs-MPS/CUDA mismatch on
+    # registered buffers (e.g. RETFound's ImageNet normalization tensors).
+    cnn = cnn.to(device)
 
     tiles, coords = im_utils.get_tiles(image,
                                        in_tile_shape=(in_w, in_w, 3),

@@ -136,18 +136,19 @@ Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
 ## Testing
 
-Tests are in `trainer/tests/`. Run from that directory:
+Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 44 tests; takes ~80s on CPU.
 
 ```bash
-# RETFound plain decoder tests (fast, no download)
 cd trainer/tests
-python -m pytest test_retfound.py -v
 
-# RFA-U-Net decoder + Tversky loss tests (fast, no download)
-python -m pytest test_retfound_rfa.py -v
+# Full unit suite (fast, no downloads)
+python -m pytest test_loss.py test_unet.py test_utils.py test_loss_masking.py \
+                  test_retfound.py test_retfound_rfa.py -v
 
-# Original unit tests (fast, no downloads)
-python -m pytest test_loss.py test_unet.py test_utils.py -v
+# Individual files
+python -m pytest test_retfound.py -v          # RETFound plain decoder
+python -m pytest test_retfound_rfa.py -v      # RFA-U-Net decoder + Tversky
+python -m pytest test_loss_masking.py -v      # sparse-supervision masking
 
 # Single test
 python -m pytest test_unet.py::TestUNet::test_forward_pass -v
@@ -156,9 +157,14 @@ python -m pytest test_unet.py::TestUNet::test_forward_pass -v
 python -m pytest test_training.py -v -s
 ```
 
-`test_retfound.py` covers: ViT token shape, `RETFoundSeg` forward pass shape, softmax correctness, gradient flow through decoder, and a tiling smoke test.
+**Coverage:**
+- `test_retfound.py` (12 tests) — ViT token shape, `RETFoundSeg` forward pass shape, softmax correctness, gradient flow through decoder, and a tiling smoke test.
+- `test_retfound_rfa.py` (18 tests) — `forward_multi_features` shape, `RETFoundSegRFA` forward pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing, Tversky loss properties, and a tiling smoke test.
+- `test_loss_masking.py` (9 tests, Phase 1) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both `combined_loss` and `tversky_loss`; parity with legacy unmasked loss when mask is all-1s; documents the legacy `outputs *= mask` leak so it cannot be re-introduced.
 
-`test_retfound_rfa.py` (15 tests) covers: `forward_multi_features` shape, `RETFoundSegRFA` forward pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing, Tversky loss properties, and a tiling smoke test.
+**End-to-end smoke scripts** (not collected by pytest, run manually):
+- `smoke_phase1.py` — UNet integration: 30-step training run, legacy-vs-fixed loss comparison across untouched-fraction settings, gradient isolation. Runs in ~30s on CPU.
+- `smoke_phase1_gpu.py` — RETFound + RETFound-RFA integration: same checks for both real model architectures. Auto-detects CUDA / MPS / CPU. Use `--use-real-weights` to also load the real RETFound checkpoint (slow). Run on a GPU machine for best results.
 
 ## Linting
 
@@ -264,6 +270,12 @@ Based on: Hayati, A. et al. (2025). RFA-U-Net: A Foundation Model-Driven Approac
 - Update loss to per-class Dice + cross-entropy
 - Single model simultaneously segments multiple biomarker types (RIPL + SDD)
 - Painter UI changes needed for multi-class overlay colors
+
+### Annotation semantics (sparse supervision policy)
+
+RetinaPainter uses **sparse corrective annotation**: only pixels the clinician explicitly painted as foreground or background are supervised. Untouched pixels are unknown — they must contribute zero loss and zero gradient. The full plan, including a forthcoming `unsure` annotation category, is in [docs/supervision_plan.md](docs/supervision_plan.md).
+
+**Phase 1 status — DONE (2026-04-27).** The masked loss path is now correct: `combined_loss` and `tversky_loss` accept a `mask` argument and apply it inside the loss; the old `outputs[:, c] *= defined_tiles` trick was leaky (softmax(0,0) = (0.5, 0.5) still incurred a constant CE penalty per untouched pixel). `datasets.py` now uses `np.logical_or(foreground, background)` for the supervision mask, with an assertion that fg/bg never overlap. `model_utils.unet_segment` also got a defensive `cnn = cnn.to(device)` so any caller that forgets to move a `DataParallel`-wrapped model to the inference device doesn't trip a CPU-vs-MPS/CUDA mismatch on RETFound's registered ImageNet-normalization buffers. Regression tests live at `trainer/tests/test_loss_masking.py`; UNet smoke at `trainer/tests/smoke_phase1.py`; RETFound + RETFound-RFA GPU smoke at `trainer/tests/smoke_phase1_gpu.py`. Expected post-fix training loss is lower by an amount that scales roughly linearly with the untouched fraction of each tile — that is **not** a regression. (Measured on a 50%-untouched synthetic tile: combined_loss drops ~0.14 nats, tversky_loss drops ~0.06 nats.)
 
 ### Possible Future Direction: Dense Corrected-Target Training
 - The current training flow is intended to remain RootPainter-style corrective annotation, where the user labels only errors rather than drawing dense masks.

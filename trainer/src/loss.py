@@ -13,12 +13,27 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Sparse-supervision policy
+-------------------------
+RetinaPainter uses sparse corrective annotation: only pixels the clinician
+has explicitly marked as foreground or background are supervised. Untouched
+pixels (and, in a future revision, pixels marked as ``unsure``) must
+contribute zero loss and zero gradient.
+
+The masked loss variants in this module enforce that. Callers pass a
+binary ``mask`` tensor (1 = supervised, 0 = ignored) and the loss is
+computed over supervised pixels only. See ``docs/supervision_plan.md``.
 """
 
 import torch
 from torch.nn.functional import softmax
 from torch.nn.functional import cross_entropy
 from torch.nn.functional import binary_cross_entropy
+
+
+def _safe_div(num, den):
+    return num / den.clamp(min=1.0)
 
 
 def dice_loss(predictions, labels):
@@ -33,17 +48,56 @@ def dice_loss(predictions, labels):
     return 1 - ((2 * intersection) / (union))
 
 
-def combined_loss(predictions, labels):
-    """ mix of dice and cross entropy """
-    # if they are bigger than 1 you get a strange gpu error
-    # without a stack track so you will have no idea why.
+def masked_dice_loss(predictions, labels, mask):
+    """Dice loss restricted to supervised pixels (``mask == 1``).
+
+    Untouched pixels contribute nothing to the intersection or union, so
+    they cannot affect either the loss value or its gradient.
+    """
+    softmaxed = softmax(predictions, 1)
+    fg_probs = softmaxed[:, 1, :, :]
+    labels_f = labels.float()
+    mask_f = mask.float()
+
+    masked_preds = fg_probs * mask_f
+    masked_labels = labels_f * mask_f
+
+    intersection = torch.sum(masked_preds * masked_labels)
+    union = torch.sum(masked_preds) + torch.sum(masked_labels)
+    # If no supervised foreground at all, dice is undefined; return 0.
+    return 1 - _safe_div(2 * intersection, union)
+
+
+def combined_loss(predictions, labels, mask=None):
+    """Combined Dice + 0.3 cross-entropy loss.
+
+    If ``mask`` is provided, it is used as an ignore mask: pixels with
+    ``mask == 0`` contribute zero loss and zero gradient (sparse
+    supervision). If ``mask`` is ``None``, behaves like the original
+    unmasked loss for backwards compatibility with old callers.
+    """
     assert torch.max(labels) <= 1
-    if torch.sum(labels) > 0:
-        return (dice_loss(predictions, labels) +
-                (0.3 * cross_entropy(predictions, labels)))
-    # When no roots use only cross entropy
-    # as dice is undefined.
-    return 0.3 * cross_entropy(predictions, labels)
+    if mask is None:
+        if torch.sum(labels) > 0:
+            return (dice_loss(predictions, labels) +
+                    (0.3 * cross_entropy(predictions, labels)))
+        # When no roots use only cross entropy as dice is undefined.
+        return 0.3 * cross_entropy(predictions, labels)
+
+    mask_f = mask.float()
+    mask_sum = mask_f.sum()
+    # If nothing in this tile is supervised, return a zero with grad.
+    if mask_sum.item() == 0:
+        return (predictions.sum() * 0.0)
+
+    # Masked CE: per-pixel CE, weighted by mask, mean over supervised pixels.
+    ce_per_pixel = cross_entropy(predictions, labels, reduction='none')
+    ce = _safe_div((ce_per_pixel * mask_f).sum(), mask_sum)
+
+    # Dice is only defined when there is supervised foreground.
+    if torch.sum(labels.float() * mask_f) > 0:
+        return masked_dice_loss(predictions, labels, mask) + 0.3 * ce
+    return 0.3 * ce
 
 
 
@@ -71,10 +125,10 @@ def combined_loss2(preds, labels, mask=None):
     return cx
 
 
-def tversky_loss(predictions, labels, alpha=0.7, beta=0.3,
+def tversky_loss(predictions, labels, mask=None, alpha=0.7, beta=0.3,
                  smooth=1e-6, class_weights=(1.0, 2.0)):
     """
-    Tversky loss for 2-class segmentation.
+    Tversky loss for 2-class segmentation, with optional supervision mask.
 
     The Tversky index generalises Dice: with ``alpha=beta=0.5`` it equals
     Dice; setting ``alpha > beta`` weights false negatives more heavily,
@@ -90,6 +144,12 @@ def tversky_loss(predictions, labels, alpha=0.7, beta=0.3,
         Raw logits — softmax is applied internally.
     labels : (B, H, W) integer tensor
         Ground-truth class indices (0 = background, 1 = foreground).
+    mask : (B, H, W) float tensor, optional
+        Supervision mask. ``mask == 1`` means the pixel is supervised
+        and contributes to the loss; ``mask == 0`` means the pixel is
+        untouched / unsure and contributes zero loss and zero gradient.
+        If ``None``, every pixel is treated as supervised (legacy
+        behaviour).
     """
     assert torch.max(labels) <= 1
     probs = softmax(predictions, dim=1)
@@ -100,14 +160,28 @@ def tversky_loss(predictions, labels, alpha=0.7, beta=0.3,
     one_hot = torch.zeros_like(probs)
     one_hot.scatter_(1, labels_long.unsqueeze(1), 1.0)
 
+    if mask is None:
+        mask_f = torch.ones_like(labels, dtype=probs.dtype)
+    else:
+        mask_f = mask.to(probs.dtype)
+        if mask_f.sum().item() == 0:
+            return predictions.sum() * 0.0
+
     weighted_sum = 0.0
     weight_total = 0.0
     for c, w in enumerate(class_weights):
-        p = probs[:, c, :, :].contiguous().view(-1)
-        t = one_hot[:, c, :, :].contiguous().view(-1)
-        tp = (p * t).sum()
-        fn = ((1 - p) * t).sum()
-        fp = (p * (1 - t)).sum()
+        p = probs[:, c, :, :]
+        t = one_hot[:, c, :, :]
+        # Restrict tp/fn/fp to supervised pixels only.
+        p_m = (p * mask_f).contiguous().view(-1)
+        t_m = (t * mask_f).contiguous().view(-1)
+        # (1 - p) and (1 - t) should also be masked so untouched pixels
+        # don't sneak into the false-negative / false-positive sums.
+        one_minus_p_m = ((1 - p) * mask_f).contiguous().view(-1)
+        one_minus_t_m = ((1 - t) * mask_f).contiguous().view(-1)
+        tp = (p_m * t_m).sum()
+        fn = (one_minus_p_m * t_m).sum()
+        fp = (p_m * one_minus_t_m).sum()
         tversky = (tp + smooth) / (tp + alpha * fn + beta * fp + smooth)
         weighted_sum = weighted_sum + float(w) * (1 - tversky)
         weight_total += float(w)
