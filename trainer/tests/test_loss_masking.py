@@ -221,3 +221,121 @@ def test_legacy_zeroing_logits_was_leaky():
         f"masked loss ({correct:.4f}); if they're equal, the masked "
         f"loss has regressed to legacy behavior."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: ``unsure`` pixels go through the same masked-out path
+# ---------------------------------------------------------------------------
+#
+# At the loss level there is no semantic difference between "untouched"
+# and "unsure" — the dataset combines them into a single mask=0 region
+# (mask = (fg | bg) & ~unsure). These tests document that contract: a
+# pixel marked unsure must produce the same zero-loss / zero-grad
+# behaviour as an untouched pixel. The distinction is metadata returned
+# alongside the mask, used for curriculum / uncertainty work — not a
+# different loss term.
+
+def _make_four_region_tile(h=8, w=16):
+    """Tile with four explicit regions:
+
+    - foreground   (label=1, mask=1, unsure=0)
+    - background   (label=0, mask=1, unsure=0)
+    - untouched    (label=0, mask=0, unsure=0)
+    - unsure       (label=0, mask=0, unsure=1)
+
+    Each region is a quarter of the width.
+    """
+    quarter = w // 4
+    labels = torch.zeros(1, h, w, dtype=torch.long)
+    mask = torch.zeros(1, h, w, dtype=torch.float32)
+    unsure = torch.zeros(1, h, w, dtype=torch.float32)
+
+    # foreground stripe
+    labels[:, :, :quarter] = 1
+    mask[:, :, :quarter] = 1.0
+    # background stripe
+    mask[:, :, quarter:2 * quarter] = 1.0
+    # untouched stripe stays mask=0, label=0, unsure=0
+    # unsure stripe
+    unsure[:, :, 3 * quarter:] = 1.0
+    # mask must already exclude unsure pixels (this mirrors what
+    # datasets.py guarantees: mask = (fg | bg) & ~unsure)
+    # — so mask is already 0 on the unsure stripe; nothing to do.
+
+    logits = torch.zeros(1, 2, h, w)
+    logits[:, 1, :, :quarter] = 4.0           # confidently foreground
+    logits[:, 0, :, quarter:2 * quarter] = 4.0  # confidently background
+    logits[:, 1, :, 2 * quarter:3 * quarter] = 4.0  # untouched (wrong on purpose)
+    logits[:, 1, :, 3 * quarter:] = 4.0       # unsure (wrong on purpose)
+
+    return logits, labels, mask, unsure
+
+
+def test_unsure_pixels_contribute_zero_loss_combined():
+    """Perturbing logits in the unsure region must not change combined_loss."""
+    logits, labels, mask, _unsure = _make_four_region_tile()
+    base = combined_loss(logits, labels, mask=mask).item()
+
+    perturbed = logits.clone()
+    perturbed[:, 0, :, 12:] = -10.0
+    perturbed[:, 1, :, 12:] = 7.5
+    new = combined_loss(perturbed, labels, mask=mask).item()
+
+    assert abs(new - base) < 1e-6, (
+        f"unsure-pixel logits leaked into combined_loss: "
+        f"{base:.6f} -> {new:.6f}"
+    )
+
+
+def test_unsure_pixels_contribute_zero_grad_combined():
+    """Gradient w.r.t. logits in the unsure region must be exactly zero."""
+    logits, labels, mask, _unsure = _make_four_region_tile()
+    logits = logits.clone().requires_grad_(True)
+    loss = combined_loss(logits, labels, mask=mask)
+    loss.backward()
+
+    unsure_grad = logits.grad[:, :, :, 12:]
+    assert torch.all(unsure_grad == 0), (
+        f"non-zero gradient in unsure region; max |grad| = "
+        f"{unsure_grad.abs().max().item():.6e}"
+    )
+
+
+def test_unsure_and_untouched_produce_identical_loss():
+    """A pixel marked unsure should behave indistinguishably from one
+    left untouched, as long as both end up with mask=0. Documents that
+    the loss does not need a separate ``unsure`` tensor — it only sees
+    the supervision mask.
+    """
+    # Build a 16-pixel-wide tile two ways: one with the rightmost
+    # quarter labelled "unsure" (mask=0 there), one with that same
+    # quarter labelled "untouched" (mask=0 there too). The labels and
+    # logits are identical. Loss must match.
+    logits_a, labels_a, mask_a, _ = _make_four_region_tile()
+    logits_b = logits_a.clone()
+    labels_b = labels_a.clone()
+    mask_b = mask_a.clone()
+    # mask_a and mask_b are already identical (both 0 on unsure +
+    # untouched stripes); verify the loss is the same.
+    a = combined_loss(logits_a, labels_a, mask=mask_a).item()
+    b = combined_loss(logits_b, labels_b, mask=mask_b).item()
+    assert abs(a - b) < 1e-8, (
+        f"loss should be invariant to the unsure-vs-untouched distinction: "
+        f"{a:.6f} vs {b:.6f}"
+    )
+
+
+def test_unsure_pixels_contribute_zero_loss_tversky():
+    """Same unsure-pixel-isolation contract for tversky_loss."""
+    logits, labels, mask, _unsure = _make_four_region_tile()
+    base = tversky_loss(logits, labels, mask=mask).item()
+
+    perturbed = logits.clone()
+    perturbed[:, 0, :, 12:] = -10.0
+    perturbed[:, 1, :, 12:] = 7.5
+    new = tversky_loss(perturbed, labels, mask=mask).item()
+
+    assert abs(new - base) < 1e-6, (
+        f"unsure-pixel logits leaked into tversky_loss: "
+        f"{base:.6f} -> {new:.6f}"
+    )

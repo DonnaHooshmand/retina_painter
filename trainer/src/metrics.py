@@ -33,11 +33,13 @@ def get_metric_csv_row(metrics):
     parts = [now_str, metrics['TP'], metrics['FP'], metrics['TN'],
              metrics['FN'], round(metrics['precision'], 4),
              round(metrics['recall'], 4), round(metrics['f1'], 4),
-             metrics['defined'], metrics['duration'], metrics['loss']]
+             metrics['defined'], metrics['duration'], metrics['loss'],
+             round(metrics.get('unsure_frac', float('nan')), 6)]
     return ','.join([str(p) for p in parts]) + '\n'
 
 
-def get_metrics(tp, fp, tn, fn, defined_sum, duration, loss=float('nan')):
+def get_metrics(tp, fp, tn, fn, defined_sum, duration, loss=float('nan'),
+                unsure_frac=float('nan')):
     total = (tp + tn + fp + fn)
     accuracy = (tp + tn) / total
     assert not np.isnan(tp)
@@ -66,4 +68,9 @@ def get_metrics(tp, fp, tn, fn, defined_sum, duration, loss=float('nan')):
         "defined": defined_sum,
         "duration": duration,
         "loss": loss,
+        # Fraction of pixels in the epoch the clinician marked as
+        # ``unsure``. NaN if not tracked. Excluded from precision/recall
+        # already (they follow ``defined`` which excludes unsure); kept as
+        # metadata for curriculum / uncertainty work.
+        "unsure_frac": unsure_frac,
     }

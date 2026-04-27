@@ -16,11 +16,33 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 Annotation semantics
 --------------------
-The dataset returns three tensors per tile: ``image``, ``foreground`` (the
-label, 1 where the clinician painted lesion, 0 elsewhere) and ``mask``
-(1 where the pixel is supervised, 0 where it is untouched). Untouched
-pixels must be ignored by the loss — see ``loss.py`` and
-``docs/supervision_plan.md``.
+The dataset returns four tensors per tile:
+
+  * ``image``     — the photo
+  * ``foreground``— the label, 1 where the clinician painted lesion,
+                    0 elsewhere
+  * ``mask``      — 1 where the pixel is supervised (clinician marked
+                    foreground OR background), 0 where it must be ignored
+                    by the loss (untouched OR unsure)
+  * ``unsure``    — 1 where the clinician explicitly marked the pixel
+                    as ambiguous; 0 otherwise. Already excluded from
+                    ``mask`` — returned separately so the trainer can
+                    log per-image difficulty / "unsure_frac" metrics.
+
+On-disk encoding
+----------------
+Annotations are RGBA PNGs written by the painter. By convention:
+
+  * channel 0 (R) = foreground brush
+  * channel 1 (G) = background brush
+  * channel 2 (B) = unsure brush  (Phase 2; legacy projects have this 0)
+  * channel 3 (A) = pixel-painted alpha (unused at the trainer)
+
+Backward compatibility: legacy 2-channel projects (no Unsure brush)
+read with channel 2 = 0 everywhere, so ``mask`` reduces to
+``foreground | background`` and behaviour is unchanged.
+
+See ``loss.py`` and ``docs/supervision_plan.md``.
 """
 
 # pylint: disable=C0111, R0913, R0903, R0914, W0511
@@ -46,7 +68,9 @@ def elastic_transform(photo, annot):
                                       scale=random.random(),
                                       intensity=0.4 + (0.6 * random.random()))
     photo = elastic.transform_image(photo, def_map)
-    annot = elastic.transform_image(annot, def_map, channels=2)
+    # Channel 0=fg, 1=bg, 2=unsure — all three need the same elastic warp
+    # so that the binary masks stay aligned with the warped image.
+    annot = elastic.transform_image(annot, def_map, channels=3)
     annot = np.round(annot).astype(np.int64)
     return photo, annot
 
@@ -122,8 +146,9 @@ class TrainDataset(Dataset):
         padded_h = image.shape[0] + (im_pad_w * 2)
         padded_im = im_utils.pad(image, im_pad_w)
 
-        # This speeds up the padding.
-        annot = annot[:, :, :2]
+        # Keep the first three channels: fg, bg, unsure. Drop the alpha
+        # channel (channel 3) — it carries no supervision.
+        annot = annot[:, :, :3]
         padded_annot = im_utils.pad(annot, im_pad_w)
         right_lim = padded_w - self.in_w
         bottom_lim = padded_h - self.in_w
@@ -138,13 +163,16 @@ class TrainDataset(Dataset):
             y_in = math.floor(random.random() * bottom_lim)
             annot_tile = padded_annot[y_in:y_in+self.in_w,
                                       x_in:x_in+self.in_w]
-            if np.sum(annot_tile) > 0:
+            # Only count fg+bg towards "is this tile worth training on" —
+            # an unsure-only tile produces a fully-masked-out loss and
+            # would just waste a forward+backward pass.
+            if np.sum(annot_tile[:, :, :2]) > 0:
                 break
 
         im_tile = padded_im[y_in:y_in+self.in_w,
                             x_in:x_in+self.in_w]
 
-        assert annot_tile.shape == (self.in_w, self.in_w, 2), (
+        assert annot_tile.shape == (self.in_w, self.in_w, 3), (
             f" shape is {annot_tile.shape} for tile from {fname}")
 
         assert im_tile.shape == (self.in_w, self.in_w, 3), (
@@ -157,6 +185,7 @@ class TrainDataset(Dataset):
 
         foreground = np.array(annot_tile)[:, :, 0]
         background = np.array(annot_tile)[:, :, 1]
+        unsure     = np.array(annot_tile)[:, :, 2]
 
         # Annotation is cropped post augmentation to ensure
         # elastic grid doesn't remove the edges.
@@ -165,23 +194,37 @@ class TrainDataset(Dataset):
         if tile_pad > 0:
             foreground = foreground[tile_pad:-tile_pad, tile_pad:-tile_pad]
             background = background[tile_pad:-tile_pad, tile_pad:-tile_pad]
+            unsure     = unsure[tile_pad:-tile_pad, tile_pad:-tile_pad]
 
-        # Sparse-supervision invariant: every pixel is either foreground,
-        # background, or untouched — never both. The painter enforces this
-        # because each pixel of the annotation PNG holds one RGBA value, but
-        # we still assert it here to catch hand-edited files or any future
-        # code path that merges the model's prediction into the annotation
-        # (which would silently produce mask>1 and double-weight pixels).
+        # Sparse-supervision invariant: each pixel belongs to exactly one
+        # of {foreground, background, unsure, untouched}. The painter
+        # enforces this because each pixel of the annotation PNG holds
+        # one RGBA value, but we still assert it here to catch hand-edited
+        # files or any future code path that merges layers incorrectly.
         fg_bool = foreground.astype(bool)
         bg_bool = background.astype(bool)
+        un_bool = unsure.astype(bool)
         assert not np.any(fg_bool & bg_bool), \
             f"Annotation has overlapping fg/bg pixels: {fname}"
-        # 1 = supervised pixel (user marked fg or bg); 0 = untouched / ignored.
-        mask = np.logical_or(fg_bool, bg_bool).astype(np.float32)
+        assert not np.any(fg_bool & un_bool), \
+            f"Annotation has overlapping fg/unsure pixels: {fname}"
+        assert not np.any(bg_bool & un_bool), \
+            f"Annotation has overlapping bg/unsure pixels: {fname}"
+
+        # mask = 1 where the pixel is supervised (user marked fg or bg
+        # AND did not mark it unsure); 0 elsewhere (untouched or unsure).
+        # Untouched and unsure both contribute zero loss / zero gradient;
+        # the distinction is metadata for curriculum / uncertainty work,
+        # not a different loss term.
+        defined = np.logical_or(fg_bool, bg_bool)
+        mask = (defined & ~un_bool).astype(np.float32)
         mask = torch.from_numpy(mask)
+
         foreground = foreground.astype(np.int64)
         foreground = torch.from_numpy(foreground)
+        unsure_t = torch.from_numpy(un_bool.astype(np.float32))
+
         im_tile = im_tile.astype(np.float32)
         im_tile = np.moveaxis(im_tile, -1, 0)
         im_tile = torch.from_numpy(im_tile)
-        return im_tile, foreground, mask
+        return im_tile, foreground, mask, unsure_t

@@ -355,14 +355,22 @@ class Trainer():
         fns = 0
         defined_total = 0
         loss_sum = 0
+        unsure_pixels = 0
+        total_pixels = 0
         for step, (photo_tiles,
                    foreground_tiles,
-                   defined_tiles) in enumerate(train_loader):
+                   defined_tiles,
+                   unsure_tiles) in enumerate(train_loader):
 
             self.check_for_instructions()
             photo_tiles = photo_tiles.to(device)
             foreground_tiles = foreground_tiles.to(device)
             defined_tiles = defined_tiles.to(device)
+            # ``unsure_tiles`` is per-pixel metadata. The loss already
+            # excludes these pixels via ``defined_tiles``; we just need
+            # the count for an epoch-level "unsure_frac" stat.
+            unsure_pixels += unsure_tiles.sum().item()
+            total_pixels += unsure_tiles.numel()
             self.optimizer.zero_grad()
             outputs = self.model(photo_tiles)
             softmaxed = softmax(outputs, 1)
@@ -415,8 +423,10 @@ class Trainer():
         duration = round(time.time() - epoch_start, 3)
         print('epoch train duration', duration)
         avg_loss = loss_sum / (step + 1)
+        unsure_frac = (unsure_pixels / total_pixels) if total_pixels else float('nan')
         self.log_metrics('train', get_metrics(tps, fps, tns, fns,
-                                              defined_total, duration, avg_loss))
+                                              defined_total, duration, avg_loss,
+                                              unsure_frac=unsure_frac))
         before_val_time = time.time()
         self.validation()
         print('epoch validation duration', time.time() - before_val_time)
@@ -428,7 +438,8 @@ class Trainer():
         if not os.path.isfile(fpath):
             # write headers if file didn't exist
             print('date_time,true_positives,false_positives,true_negatives,'
-                  'false_negatives,precision,recall,f1,defined,duration,loss',
+                  'false_negatives,precision,recall,f1,defined,duration,loss,'
+                  'unsure_frac',
                   file=open(fpath, 'w+'))
         with open(fpath, 'a+') as log_file:
             log_file.write(get_metric_csv_row(metrics))

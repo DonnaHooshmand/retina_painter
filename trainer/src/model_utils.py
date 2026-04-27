@@ -244,9 +244,17 @@ def epoch(model, train_loader, batch_size,
     defined_total = 0
     loss_sum = 0
 
-    for step, (photo_tiles,
-               foreground_tiles,
-               defined_tiles) in enumerate(train_loader):
+    for batch in enumerate(train_loader):
+        # The dataset returns a 4-tuple post Phase 2 (image, fg, mask,
+        # unsure). The unsure channel is metadata only — the loss already
+        # excludes those pixels via ``defined_tiles``. We accept either
+        # the 3-tuple (legacy callers) or the 4-tuple to keep this helper
+        # tolerant of older tests.
+        step, parts = batch
+        if len(parts) == 4:
+            photo_tiles, foreground_tiles, defined_tiles, _unsure_tiles = parts
+        else:
+            photo_tiles, foreground_tiles, defined_tiles = parts
 
         photo_tiles = photo_tiles.to(device)
         foreground_tiles = foreground_tiles.to(device).float()
