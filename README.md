@@ -23,7 +23,7 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 - **Curriculum learning (planned)** — A staged training scheduler will present examples in order of difficulty (synthetic lesions → clear real cases → ambiguous cases → confounders), further reducing the labeled data required to reach clinical accuracy.
 
-- **Annotation semantics: sparse corrective supervision** — Pixels the clinician paints as foreground or background are supervised; untouched pixels are treated as unknown and excluded from the loss with zero gradient and zero loss-value contribution. (Earlier RootPainter code zeroed the logits at untouched pixels but did not actually exclude them from loss — every untouched pixel added a constant CE penalty, slowing training. RetinaPainter's masked loss fixes this; see Phase 1 in [docs/supervision_plan.md](docs/supervision_plan.md).) A future `unsure` annotation category is planned for explicitly ambiguous regions (blurry imagery, hard lesion edges) — also masked from loss but retained as metadata for curriculum learning and uncertainty evaluation. A dense corrected-target alternative remains a possible future research direction but is not the current contract.
+- **Annotation semantics: sparse corrective supervision** — Pixels the clinician paints as foreground or background are supervised; untouched pixels are treated as unknown and excluded from the loss with zero gradient and zero loss-value contribution. (Earlier RootPainter code zeroed the logits at untouched pixels but did not actually exclude them from loss — every untouched pixel added a constant CE penalty, slowing training. RetinaPainter's masked loss fixes this; see Phase 1 in [docs/supervision_plan.md](docs/supervision_plan.md).) The trainer also reads a third **unsure** annotation channel (channel 2 of the RGBA annotation PNG) for explicitly ambiguous regions — blurry imagery, hard lesion edges, anything the clinician reviewed but doesn't want to commit on. Unsure pixels are masked from loss identically to untouched pixels, but they're tracked separately as `unsure_frac` per epoch in the training CSV so they can drive curriculum learning and uncertainty evaluation later. The painter's "Unsure" brush is planned next; legacy 2-channel projects continue to work unchanged (channel 2 reads as zero). A dense corrected-target alternative remains a possible future research direction but is not the current contract.
 
 ### Roadmap
 
@@ -33,8 +33,9 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 | 1b | RFA-U-Net attention decoder | Complete |
 | 1c | Model type UI dropdown, RetinaPainter rename | Complete |
 | 1d | Sparse-supervision masking fix (untouched pixels truly excluded from loss) | Complete |
-| 2a | `unsure` annotation category (painter brush + masked from loss + curriculum metadata) | Planned |
-| 2b | LoRA parameter-efficient fine-tuning | Planned |
+| 2a | `unsure` annotation category — trainer side (3-channel schema, masked from loss, `unsure_frac` CSV) | Complete |
+| 2b | `unsure` annotation category — painter UI (brush, save path, "when to use Unsure" guidance) | Planned |
+| 2c | LoRA parameter-efficient fine-tuning | Planned |
 | 3 | Curriculum learning scheduler (driven in part by `unsure` density) | Planned |
 | 4 | Multi-class segmentation support | Planned |
 | 5 | Evaluate dense corrected-target training from sparse edits | Possible future work |

@@ -11,10 +11,10 @@ source ../env/bin/activate          # macOS / Linux
 
 # Full unit suite — fast, no downloads, ~80s on CPU
 python -m pytest test_loss.py test_unet.py test_utils.py test_loss_masking.py \
-                  test_retfound.py test_retfound_rfa.py -v
+                  test_annotation_schema.py test_retfound.py test_retfound_rfa.py -v
 ```
 
-Expected: **44 passed**.
+Expected: **55 passed**.
 
 A single test:
 
@@ -28,7 +28,8 @@ python -m pytest test_loss_masking.py::test_combined_loss_zero_grad_on_untouched
 |---|---:|---|
 | `test_loss.py` | 2 | Dice-loss correctness on synthetic perfect-prediction tensors. Confirms the loss bottoms out at zero when predictions match labels. |
 | `test_unet.py` | 3 | The original `UNetGNRes` architecture: forward pass shape, basic training step, training-with-mask path. |
-| `test_loss_masking.py` | 9 | **Sparse-supervision masking (Phase 1).** Locks in the contract that untouched pixels contribute **zero loss-value sensitivity** and **zero gradient** for both `combined_loss` and `tversky_loss`. Includes parity tests against the legacy unmasked loss when the mask is all-ones, an all-untouched-tile edge case, and a regression test that documents the legacy `outputs *= mask` approach was leaky — so nobody re-introduces it. |
+| `test_loss_masking.py` | 13 | **Sparse-supervision masking (Phases 1 + 2).** Locks in the contract that untouched **and unsure** pixels contribute **zero loss-value sensitivity** and **zero gradient** for both `combined_loss` and `tversky_loss`. Includes parity tests against the legacy unmasked loss when the mask is all-ones, an all-untouched-tile edge case, a regression test that documents the legacy `outputs *= mask` approach was leaky, and Phase 2 tests confirming "untouched" and "unsure" are indistinguishable to the loss (intentional — the distinction is metadata, not a different loss term). |
+| `test_annotation_schema.py` | 7 | **3-channel annotation schema (Phase 2).** On-disk RGBA PNGs are read as `R=foreground`, `G=background`, `B=unsure`. Tests cover the round-trip read of a 3-channel annotation, backward-compat with legacy 2-channel-style PNGs (channel 2 = 0 → unsure all zero, mask reduces to fg|bg), three mutual-exclusion assertions (fg/bg, fg/unsure, bg/unsure), and the tile-selection skip behavior for unsure-only tiles. |
 | `test_retfound.py` | 12 | RETFound plain-decoder model (`--model-type retfound`): ViT token shape, `RETFoundSeg` forward-pass shape, softmax correctness, gradient flow through the decoder, and a tiling smoke test that runs `unet_segment` on a synthetic 512×512 image. |
 | `test_retfound_rfa.py` | 18 | RETFound + RFA-U-Net attention decoder (`--model-type retfound_rfa`): `forward_multi_features` shape, `RETFoundSegRFA` forward-pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing (`freeze_encoder_blocks(21)`), Tversky-loss properties, and a tiling smoke test. |
 | `test_instructions.py` | 4 | The painter→trainer JSON-instruction retry pipeline. Confirms a successful instruction file gets moved to `executed/`, a failing one is retried then moved to `failed/`, the retry counter resets after success, and an empty instruction file is left in place. |

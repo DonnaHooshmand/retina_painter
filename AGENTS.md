@@ -136,19 +136,20 @@ Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
 ## Testing
 
-Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 44 tests; takes ~80s on CPU.
+Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 55 tests; takes ~80s on CPU.
 
 ```bash
 cd trainer/tests
 
 # Full unit suite (fast, no downloads)
 python -m pytest test_loss.py test_unet.py test_utils.py test_loss_masking.py \
-                  test_retfound.py test_retfound_rfa.py -v
+                  test_annotation_schema.py test_retfound.py test_retfound_rfa.py -v
 
 # Individual files
-python -m pytest test_retfound.py -v          # RETFound plain decoder
-python -m pytest test_retfound_rfa.py -v      # RFA-U-Net decoder + Tversky
-python -m pytest test_loss_masking.py -v      # sparse-supervision masking
+python -m pytest test_retfound.py -v             # RETFound plain decoder
+python -m pytest test_retfound_rfa.py -v         # RFA-U-Net decoder + Tversky
+python -m pytest test_loss_masking.py -v         # sparse-supervision masking
+python -m pytest test_annotation_schema.py -v    # Phase 2: 3-channel schema
 
 # Single test
 python -m pytest test_unet.py::TestUNet::test_forward_pass -v
@@ -160,7 +161,8 @@ python -m pytest test_training.py -v -s
 **Coverage:**
 - `test_retfound.py` (12 tests) — ViT token shape, `RETFoundSeg` forward pass shape, softmax correctness, gradient flow through decoder, and a tiling smoke test.
 - `test_retfound_rfa.py` (18 tests) — `forward_multi_features` shape, `RETFoundSegRFA` forward pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing, Tversky loss properties, and a tiling smoke test.
-- `test_loss_masking.py` (9 tests, Phase 1) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both `combined_loss` and `tversky_loss`; parity with legacy unmasked loss when mask is all-1s; documents the legacy `outputs *= mask` leak so it cannot be re-introduced.
+- `test_loss_masking.py` (13 tests, Phases 1 + 2) — sparse-supervision regression tests: untouched and unsure pixels contribute zero gradient and zero loss-value sensitivity for both `combined_loss` and `tversky_loss`; parity with legacy unmasked loss when mask is all-1s; documents the legacy `outputs *= mask` leak so it cannot be re-introduced; documents that "untouched" and "unsure" are indistinguishable at the loss level (intentional).
+- `test_annotation_schema.py` (7 tests, Phase 2) — on-disk 3-channel schema round-trip, legacy 2-channel backward-compat (channel 2 = 0 reads as zero unsure), three mutual-exclusion assertions (fg/bg, fg/unsure, bg/unsure), and the unsure-only-tile skip behavior across multiple seeds.
 
 **End-to-end smoke scripts** (not collected by pytest, run manually):
 - `smoke_phase1.py` — UNet integration: 30-step training run, legacy-vs-fixed loss comparison across untouched-fraction settings, gradient isolation. Runs in ~30s on CPU.
@@ -276,6 +278,17 @@ Based on: Hayati, A. et al. (2025). RFA-U-Net: A Foundation Model-Driven Approac
 RetinaPainter uses **sparse corrective annotation**: only pixels the clinician explicitly painted as foreground or background are supervised. Untouched pixels are unknown — they must contribute zero loss and zero gradient. The full plan, including a forthcoming `unsure` annotation category, is in [docs/supervision_plan.md](docs/supervision_plan.md).
 
 **Phase 1 status — DONE (2026-04-27).** The masked loss path is now correct: `combined_loss` and `tversky_loss` accept a `mask` argument and apply it inside the loss; the old `outputs[:, c] *= defined_tiles` trick was leaky (softmax(0,0) = (0.5, 0.5) still incurred a constant CE penalty per untouched pixel). `datasets.py` now uses `np.logical_or(foreground, background)` for the supervision mask, with an assertion that fg/bg never overlap. `model_utils.unet_segment` also got a defensive `cnn = cnn.to(device)` so any caller that forgets to move a `DataParallel`-wrapped model to the inference device doesn't trip a CPU-vs-MPS/CUDA mismatch on RETFound's registered ImageNet-normalization buffers. Regression tests live at `trainer/tests/test_loss_masking.py`; UNet smoke at `trainer/tests/smoke_phase1.py`; RETFound + RETFound-RFA GPU smoke at `trainer/tests/smoke_phase1_gpu.py`. Expected post-fix training loss is lower by an amount that scales roughly linearly with the untouched fraction of each tile — that is **not** a regression. (Measured on a 50%-untouched synthetic tile: combined_loss drops ~0.14 nats, tversky_loss drops ~0.06 nats.)
+
+**Phase 2 (trainer side) status — DONE (2026-04-27).** Adds the `unsure` annotation category. At the loss level, unsure pixels behave identically to untouched (masked out, zero loss + zero gradient); the distinction is metadata for future curriculum / uncertainty work.
+
+- **On-disk schema:** annotation PNGs are read as RGB. R = foreground, G = background, **B = unsure**. Legacy 2-channel projects have B = 0 → backward-compatible automatically.
+- `datasets.py`: 3-channel read; `mask = (fg | bg) & ~unsure`; three-way mutual-exclusion assertions; tile-selection loop checks `np.sum(annot_tile[:, :, :2]) > 0` so unsure-only tiles are skipped. `__getitem__` returns a **4-tuple** `(image, foreground, mask, unsure)`.
+- `trainer.py`: unpacks the 4-tuple, accumulates `unsure_pixels / total_pixels` per epoch, writes it to a new `unsure_frac` CSV column.
+- `model_utils.epoch`: tolerant 3-tuple-or-4-tuple unpack so the benchmark tests keep working.
+- `metrics.py`: `get_metrics()` accepts `unsure_frac` and emits it; `get_metric_csv_row()` writes it as the trailing column.
+- `loss.py` is **unchanged** — there is no semantic difference between untouched and unsure at the loss level.
+- New tests: `trainer/tests/test_annotation_schema.py` (7 tests for the on-disk schema, backward-compat, and overlap assertions); `test_loss_masking.py` extended with 4 tests confirming unsure pixels are loss-isolated identically to untouched.
+- **Painter side is not yet done.** The trainer reads channel 2 today, but the painter does not yet write to it — there is no "Unsure" brush in the UI yet. The trainer is forward-compatible: as soon as the painter writes to channel 2, the trainer picks it up.
 
 ### Possible Future Direction: Dense Corrected-Target Training
 - The current training flow is intended to remain RootPainter-style corrective annotation, where the user labels only errors rather than drawing dense masks.

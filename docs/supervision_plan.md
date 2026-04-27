@@ -359,6 +359,8 @@ Goal: untouched pixels contribute zero gradient and zero loss. No new annotation
 
 Goal: clinicians can mark a third state, the trainer knows to mask it, and old projects keep working.
 
+**Status — trainer side DONE (2026-04-27); painter side pending.** The trainer reads channel 2 of every annotation PNG today (`R=fg`, `G=bg`, `B=unsure`), excludes those pixels from the loss identically to untouched pixels, and logs `unsure_frac` in the per-epoch CSV. Legacy 2-channel projects continue to work unchanged (channel 2 = 0). The painter has not yet been extended with an Unsure brush, so users can't paint to channel 2 from the UI yet — the trainer is just forward-compatible. Steps 1, 3, 4, 7 (partly), 8 below are landed; steps 2, 5, 6, 9 are still to do.
+
 1. **Define the on-disk schema.**
    - Annotations are saved as RGBA PNGs; trainer reads `annot[:, :, 0]` as foreground, `annot[:, :, 1]` as background, channel 2 is currently unused (`trainer/src/datasets.py:118` already takes `[:, :, :2]`). Use **channel 2 as `unsure`**.
    - This is naturally backward-compatible: legacy 2-channel projects load with channel 2 all zero, which means "no unsure pixels" — same as current behaviour.
