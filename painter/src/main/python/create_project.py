@@ -37,7 +37,13 @@ class CreateProjectWidget(QtWidgets.QWidget):
 
     def __init__(self, sync_dir):
         super().__init__()
+        # Single-mode state (5:1 auto-routing — current/default behavior).
         self.selected_dir = None
+        # Split-mode state (user pre-organized images into train/ and val/).
+        self.split_mode = False
+        self.selected_train_dir = None
+        self.selected_val_dir = None
+
         self.proj_name = None
         self.selected_model = None
         self.use_random_weights = True
@@ -52,7 +58,9 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.name_edit_widget.changed.connect(self.validate)
         self.layout.addWidget(self.name_edit_widget)
 
+        self.add_split_mode_widget()
         self.add_im_dir_widget()
+        self.add_split_dir_widget()
         self.add_model_type_widget()
         self.add_radio_widget()
         self.add_model_btn()
@@ -61,16 +69,119 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.add_info_label()
         self.add_create_btn()
 
+    def add_split_mode_widget(self):
+        """Checkbox to toggle between 5:1 auto-split (default) and explicit
+        pre-split train/val folders.
+
+        Auto-split (default) is the original RootPainter behavior: a single
+        image directory; the painter routes new annotations between
+        annotations/train/ and annotations/val/ using a 5:1 file-count ratio
+        with no awareness of patient ID or other grouping.
+
+        Pre-split mode lets the user point at two directories that have
+        already been separated (typically by patient ID, to avoid
+        within-patient leakage between train and val). The painter will
+        then route annotations based on which source folder each image
+        came from, rather than by count.
+        """
+        helper = QtWidgets.QLabel(
+            "By default, RetinaPainter routes new annotations between train/ "
+            "and val/ using a 5:1 file-count ratio (no awareness of patient "
+            "ID). If you've pre-organized your images into separate train "
+            "and validation folders (e.g. for patient-level data leakage "
+            "prevention), check the box below to use those folders directly."
+        )
+        helper.setWordWrap(True)
+        helper.setStyleSheet("color: #555;")
+        self.layout.addWidget(helper)
+
+        self.split_mode_checkbox = QtWidgets.QCheckBox(
+            "I have pre-split train/val folders"
+        )
+        self.split_mode_checkbox.toggled.connect(self.on_split_mode_toggled)
+        self.layout.addWidget(self.split_mode_checkbox)
+
     def add_im_dir_widget(self):
-        # Add specify image directory button
+        # Single-mode picker (5:1 auto-routing). Wrapped in a container so
+        # the whole section can be hidden when the user chooses pre-split mode.
+        self.single_dir_container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.single_dir_container.setLayout(layout)
+
         directory_label = QtWidgets.QLabel()
         directory_label.setText("Image directory: Not yet specified")
-        self.layout.addWidget(directory_label)
+        layout.addWidget(directory_label)
         self.directory_label = directory_label
 
         specify_image_dir_btn = QtWidgets.QPushButton('Specify image directory')
         specify_image_dir_btn.clicked.connect(self.select_photo_dir)
-        self.layout.addWidget(specify_image_dir_btn)
+        layout.addWidget(specify_image_dir_btn)
+
+        self.layout.addWidget(self.single_dir_container)
+
+    def add_split_dir_widget(self):
+        # Pre-split-mode pickers: one for train, one for val. Hidden by default.
+        self.split_dir_container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.split_dir_container.setLayout(layout)
+
+        # Requirements summary so the user sees up front what's expected.
+        reqs = QtWidgets.QLabel(
+            "Both folders must:\n"
+            "  • live inside the sync directory's datasets/ folder\n"
+            "  • contain at least one image\n"
+            "  • have unique filenames (no image present in both)"
+        )
+        reqs.setStyleSheet("color: #555;")
+        layout.addWidget(reqs)
+
+        # Train folder picker
+        self.train_dir_label = QtWidgets.QLabel(
+            "Train images directory: Not yet specified"
+        )
+        layout.addWidget(self.train_dir_label)
+        train_btn = QtWidgets.QPushButton('Specify train images directory')
+        train_btn.clicked.connect(self.select_train_dir)
+        layout.addWidget(train_btn)
+
+        # Val folder picker
+        self.val_dir_label = QtWidgets.QLabel(
+            "Validation images directory: Not yet specified"
+        )
+        layout.addWidget(self.val_dir_label)
+        val_btn = QtWidgets.QPushButton('Specify validation images directory')
+        val_btn.clicked.connect(self.select_val_dir)
+        layout.addWidget(val_btn)
+
+        self.split_dir_container.setVisible(False)
+        self.layout.addWidget(self.split_dir_container)
+
+    def on_split_mode_toggled(self, checked):
+        """Switch between 5:1 auto-split and pre-split modes.
+
+        Clears the path stored for the *other* mode so we don't accidentally
+        carry a stale selection across modes.
+        """
+        self.split_mode = checked
+        self.single_dir_container.setVisible(not checked)
+        self.split_dir_container.setVisible(checked)
+        if checked:
+            # Entering pre-split mode — forget any single-mode selection.
+            self.selected_dir = None
+            self.directory_label.setText("Image directory: Not yet specified")
+        else:
+            # Leaving pre-split mode — forget train/val selections.
+            self.selected_train_dir = None
+            self.selected_val_dir = None
+            self.train_dir_label.setText(
+                "Train images directory: Not yet specified"
+            )
+            self.val_dir_label.setText(
+                "Validation images directory: Not yet specified"
+            )
+        self.validate()
 
     def add_model_type_widget(self):
         label = QtWidgets.QLabel("Model type:")
@@ -153,21 +264,16 @@ class CreateProjectWidget(QtWidgets.QWidget):
             self.create_project_btn.setEnabled(False)
             return
 
-        if not self.selected_dir:
-            self.info_label.setText("Directory must be specified to create project")
-            self.create_project_btn.setEnabled(False)
-            return
+        # Directory validation: branches on auto-split vs pre-split mode.
+        if self.split_mode:
+            if not self._validate_split_dirs():
+                return
+        else:
+            if not self._validate_single_dir():
+                return
 
         if not self.use_random_weights and not self.selected_model:
             self.info_label.setText("Starting model must be specified to create project")
-            self.create_project_btn.setEnabled(False)
-            return
-
-        cur_files = os.listdir(self.selected_dir)
-        cur_files = [is_image(f) for f in cur_files]
-        if not cur_files:
-            message = "Folder contains no images."
-            self.info_label.setText(message)
             self.create_project_btn.setEnabled(False)
             return
 
@@ -181,9 +287,103 @@ class CreateProjectWidget(QtWidgets.QWidget):
         if os.path.exists(os.path.join(self.sync_dir, self.project_location)):
             self.info_label.setText(f"Project with name {self.proj_name} already exists")
             self.create_project_btn.setEnabled(False)
+            return
+
+        if self.split_mode:
+            # Slice 1: validation passes, but project creation in pre-split
+            # mode is wired up in Slice 2. Until then, surface the gating
+            # clearly so the user knows what to expect when they click Create.
+            self.info_label.setText(
+                f"Project location: {self.project_location} — pre-split mode "
+                "validation passed. Project creation in pre-split mode is "
+                "not yet implemented (Slice 2)."
+            )
+            self.create_project_btn.setEnabled(True)
         else:
             self.info_label.setText(f"Project location: {self.project_location}")
             self.create_project_btn.setEnabled(True)
+
+    def _validate_single_dir(self) -> bool:
+        """Validate the single-directory (auto-split) flow. Returns True if
+        the directory check passed; False (and updates info_label + disables
+        Create) otherwise."""
+        if not self.selected_dir:
+            self.info_label.setText("Directory must be specified to create project")
+            self.create_project_btn.setEnabled(False)
+            return False
+
+        cur_files = os.listdir(self.selected_dir)
+        cur_files = [is_image(f) for f in cur_files]
+        if not cur_files:
+            self.info_label.setText("Folder contains no images.")
+            self.create_project_btn.setEnabled(False)
+            return False
+
+        return True
+
+    def _validate_split_dirs(self) -> bool:
+        """Validate the pre-split (train + val) flow. Returns True if both
+        directories are specified, both inside sync_dir/datasets/, both
+        contain images, and have no filename overlap."""
+        if not self.selected_train_dir:
+            self.info_label.setText(
+                "Train images directory must be specified."
+            )
+            self.create_project_btn.setEnabled(False)
+            return False
+        if not self.selected_val_dir:
+            self.info_label.setText(
+                "Validation images directory must be specified."
+            )
+            self.create_project_btn.setEnabled(False)
+            return False
+
+        if self.selected_train_dir == self.selected_val_dir:
+            self.info_label.setText(
+                "Train and validation directories must be different."
+            )
+            self.create_project_btn.setEnabled(False)
+            return False
+
+        # Both must live inside sync_dir/datasets/ — same constraint as
+        # the existing single-folder mode (enforced in create_project).
+        datasets_dir = os.path.abspath(os.path.join(self.sync_dir, 'datasets'))
+        for label, path in (("Train", self.selected_train_dir),
+                            ("Validation", self.selected_val_dir)):
+            if not os.path.abspath(path).startswith(datasets_dir):
+                self.info_label.setText(
+                    f"{label} folder must be inside the sync directory's "
+                    "datasets/ folder."
+                )
+                self.create_project_btn.setEnabled(False)
+                return False
+
+        train_imgs = [f for f in os.listdir(self.selected_train_dir) if is_image(f)]
+        val_imgs = [f for f in os.listdir(self.selected_val_dir) if is_image(f)]
+        if not train_imgs:
+            self.info_label.setText("Train folder contains no images.")
+            self.create_project_btn.setEnabled(False)
+            return False
+        if not val_imgs:
+            self.info_label.setText("Validation folder contains no images.")
+            self.create_project_btn.setEnabled(False)
+            return False
+
+        # No filename overlap — overlapping filenames mean we can't
+        # uniquely route an annotation back to train or val by name.
+        overlap = set(train_imgs) & set(val_imgs)
+        if overlap:
+            sample = sorted(overlap)[:3]
+            example = ", ".join(sample) + ("..." if len(overlap) > 3 else "")
+            self.info_label.setText(
+                f"Filename overlap between train and val ({len(overlap)} "
+                f"file(s)): {example}. Filenames must be unique across both "
+                "folders."
+            )
+            self.create_project_btn.setEnabled(False)
+            return False
+
+        return True
 
 
     def select_photo_dir(self):
@@ -197,6 +397,33 @@ class CreateProjectWidget(QtWidgets.QWidget):
 
         self.photo_dialog.fileSelected.connect(output_selected)
         self.photo_dialog.open()
+
+    def _open_dataset_dir_dialog(self, on_chosen):
+        """Helper for the two split-mode pickers — both pickers want the same
+        config (datasets folder default, single-directory selection mode), so
+        share one factory rather than duplicating it.
+        """
+        dialog = QtWidgets.QFileDialog(
+            self, directory=os.path.join(self.sync_dir, 'datasets')
+        )
+        dialog.setFileMode(QtWidgets.QFileDialog.Directory)
+        dialog.fileSelected.connect(lambda: on_chosen(dialog.selectedFiles()[0]))
+        dialog.open()
+        return dialog  # keep a reference alive on the instance to avoid GC
+
+    def select_train_dir(self):
+        def chosen(path):
+            self.selected_train_dir = path
+            self.train_dir_label.setText('Train images directory: ' + path)
+            self.validate()
+        self._train_dialog = self._open_dataset_dir_dialog(chosen)
+
+    def select_val_dir(self):
+        def chosen(path):
+            self.selected_val_dir = path
+            self.val_dir_label.setText('Validation images directory: ' + path)
+            self.validate()
+        self._val_dialog = self._open_dataset_dir_dialog(chosen)
 
 
     def select_model(self):
@@ -212,6 +439,25 @@ class CreateProjectWidget(QtWidgets.QWidget):
             self.validate()
 
     def create_project(self):
+        # Pre-split mode is not yet wired through to project creation (the
+        # downstream painter loading and trainer instruction need their own
+        # changes). Surface that clearly rather than silently creating a
+        # half-broken project.
+        if self.split_mode:
+            QtWidgets.QMessageBox.information(
+                self, 'Pre-split mode not yet available',
+                "The pre-split train/val mode is in development. The "
+                "validation here confirms your folders look correct, but "
+                "creating a project in this mode is not yet implemented — "
+                "that lands in the next slice (Slice 2: project creation, "
+                "painter image loading; Slice 3: trainer instruction).\n\n"
+                f"Train: {self.selected_train_dir}\n"
+                f"Val:   {self.selected_val_dir}\n\n"
+                "Untick the box to create a project in the default 5:1 "
+                "auto-split mode."
+            )
+            return
+
         project_name = self.proj_name
         project_location = Path(self.project_location)
 

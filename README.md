@@ -1,96 +1,45 @@
 ## RetinaPainter
 
-RetinaPainter is a next-generation interactive annotation platform for training deep learning models on retinal OCT images with minimal labeled data. It extends [RootPainter](https://github.com/Abe404/root_painter) by replacing the scratch-trained U-Net with a [RETFound](https://github.com/rmaphoh/RETFound_MAE) Vision Transformer foundation model backbone, enabling clinically useful segmentation models for novel retinal biomarkers from as few as 100–200 annotated images.
-
-The system retains RootPainter's corrective annotation loop — the clinician paints corrections on the model's predictions and the model retrains in real time — but leverages rich representations pre-trained on 1.6 million retinal images to dramatically reduce the annotation burden.
-
-### Background: RootPainter
-
-RetinaPainter is a fork of [RootPainter](https://github.com/Abe404/root_painter), an open-source GUI tool for segmenting biological images via human-in-the-loop training ([Smith et al., New Phytologist 2022](https://doi.org/10.1111/nph.18387)). RootPainter demonstrated that a few hours of corrective annotation can match fully supervised performance — but it trains a U-Net from scratch on each new task, limiting generalization and requiring dense supervision.
-
-RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [Drakopoulos et al. (2024)](https://doi.org/10.3928/23258160-20240410-01), the interactive loop was used to train the first automated detector for retinal ischemic perivascular lesions (RIPLs) and subretinal drusenoid deposits (SDDs), achieving ~90% and ~92% accuracy respectively with only ~6 hours of annotation time. RetinaPainter aims to push further by combining that corrective paradigm with modern foundation model pretraining.
-
-### What's New in RetinaPainter
-
-- **Foundation model backbone** — The U-Net is replaced with RETFound ViT-Large, a Vision Transformer pre-trained via masked autoencoder self-supervision on 1.6M unlabeled retinal images. Two segmentation heads are available, selected from a dropdown in the **New Project** dialog:
-  - **U-Net (original RootPainter)** — scratch-trained U-Net with Group Normalization, unchanged from RootPainter.
-  - **RETFound + plain decoder** — plain 4-stage transposed-convolution decoder on top of the frozen ViT encoder.
-  - **RETFound + RFA-U-Net (recommended)** — **RFA-U-Net decoder**: uses four intermediate ViT feature maps (Z6, Z12, Z18, Z24) as U-Net-style skip connections, each passed through a progressive upsampling pyramid and fused via additive attention gates. Achieves Dice 95.04% / Jaccard 90.59% on choroid segmentation vs. all CNN and SOTA baselines (Hayati et al., 2025). Uses Tversky loss (α=0.7, β=0.3) and freezes the first 21 of 24 encoder blocks, training only the last 3 blocks + decoder with AdamW.
-
-- **Parameter-efficient fine-tuning (planned)** — LoRA adapter layers will be injected into the ViT encoder so that each interactive training step updates only a small fraction of parameters, enabling near-real-time model updates on a desktop GPU.
-
-- **Multi-class segmentation (planned)** — A single model will simultaneously label multiple lesion types (e.g. RIPL + SDD), addressing RootPainter's one-class-per-model limitation.
-
-- **Curriculum learning (planned)** — A staged training scheduler will present examples in order of difficulty (synthetic lesions → clear real cases → ambiguous cases → confounders), further reducing the labeled data required to reach clinical accuracy.
-
-- **Annotation semantics: sparse corrective supervision** — Pixels the clinician paints as foreground or background are supervised; untouched pixels are treated as unknown and excluded from the loss with zero gradient and zero loss-value contribution. (Earlier RootPainter code zeroed the logits at untouched pixels but did not actually exclude them from loss — every untouched pixel added a constant CE penalty, slowing training. RetinaPainter's masked loss fixes this; see Phase 1 in [docs/supervision_plan.md](docs/supervision_plan.md).) A future `unsure` annotation category is planned for explicitly ambiguous regions (blurry imagery, hard lesion edges) — also masked from loss but retained as metadata for curriculum learning and uncertainty evaluation. A dense corrected-target alternative remains a possible future research direction but is not the current contract.
-
-### Roadmap
-
-| Phase | Description | Status |
-|---|---|---|
-| 1a | RETFound ViT-Large backbone + plain decoder | Complete |
-| 1b | RFA-U-Net attention decoder | Complete |
-| 1c | Model type UI dropdown, RetinaPainter rename | Complete |
-| 1d | Sparse-supervision masking fix (untouched pixels truly excluded from loss) | Complete |
-| 2a | `unsure` annotation category (painter brush + masked from loss + curriculum metadata) | Planned |
-| 2b | LoRA parameter-efficient fine-tuning | Planned |
-| 3 | Curriculum learning scheduler (driven in part by `unsure` density) | Planned |
-| 4 | Multi-class segmentation support | Planned |
-| 5 | Evaluate dense corrected-target training from sparse edits | Possible future work |
+Interactive annotation platform for training segmentation models on retinal OCT images with very few labels. A fork of [RootPainter](https://github.com/Abe404/root_painter) that swaps the scratch-trained U-Net for a [RETFound](https://github.com/rmaphoh/RETFound_MAE) ViT-Large foundation model encoder, so clinically useful models can be trained from ~100–200 annotated images instead of thousands. The clinician paints corrections on the model's predictions and the model retrains in real time.
 
 ---
 
-### Installation
+## Getting started
 
-#### Step 1 — Download RETFound weights
-
-Before running in RETFound mode, download the pretrained weights (~3.95 GB) using the setup helper:
+### 1. Download RETFound weights (one time, ~3.95 GB)
 
 ```bash
 python setup_retfound.py
 ```
 
-This downloads `RETFound_oct.pth` from Google Drive to `~/.cache/retina_painter/`. The download happens only once. Run this from the repo root inside the trainer virtual environment (see below).
+Caches `RETFound_oct.pth` to `~/.cache/retina_painter/`. If you have HuggingFace access for `iszt/RETFound_mae_natureOCT`, pass `--token YOUR_HF_TOKEN`.
 
-If you have HuggingFace access approval for `iszt/RETFound_mae_natureOCT`, you can supply a token instead:
+### 2. Install the trainer (server)
 
-```bash
-python setup_retfound.py --token YOUR_HF_TOKEN
-```
-
-#### Step 2 — Trainer (server)
+**Mac / Linux:**
 
 ```bash
 cd trainer
 python -m venv env
-source env/bin/activate   # Windows: env\Scripts\activate
+source env/bin/activate
 pip install -r requirements.txt
 ```
 
-> **Windows users:** Python 3.11 or 3.12 is supported (3.13+ is not). Use `py -3.11 -m venv env` or `py -3.12 -m venv env` depending on what is installed. Activate with `env\Scripts\activate`. If activation is blocked, run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` first.
+**Windows (PowerShell):**
 
-> **PyTorch on Windows/Linux (CUDA):** Install PyTorch cu126 before the rest of requirements, since cu124 wheels do not exist for torch>=2.7. The download is ~2.5 GB and can take 10–20 minutes depending on your connection:
-> ```
-> pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 --index-url https://download.pytorch.org/whl/cu126
-> pip install -r requirements.txt
-> ```
+```powershell
+cd trainer
+py -3.11 -m venv env                      # or py -3.12 — Python 3.13+ not supported
+env\Scripts\activate                      # if blocked: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+pip install -r requirements.txt
+```
 
-> **Windows Smart App Control:** If you see a `torchvision::nms` or DLL error on first run, Windows may have blocked the CUDA DLLs. Run PowerShell **as Administrator** from the venv folder and unblock them:
-> ```powershell
-> Get-ChildItem -Path "env\Lib\site-packages\torch\lib" -Filter "*.dll" | Unblock-File
-> Get-ChildItem -Path "env\Lib\site-packages\torchvision" -Recurse -Filter "*.pyd" | Unblock-File
-> ```
-> Then restart the trainer.
+PyTorch cu126 (~2.5 GB) takes 10–20 minutes; cu124 wheels don't exist for torch≥2.7. See [Windows troubleshooting](#windows-troubleshooting) if installation hangs or crashes.
 
-> **Windows virtual memory (paging file):** The RETFound model (~4 GB VRAM) combined with multiple DataLoader workers can exhaust Windows' default paging file. Symptoms are `MemoryError` or `DLL load failed: paging file too small` during training. Fix: move the paging file to a drive with ample free space (e.g. a data drive), and set it to Initial: 16384 MB / Maximum: 32768 MB via `sysdm.cpl` → Advanced → Performance → Virtual Memory. **Do not set a large paging file on a drive with less than 20 GB free** — this will make the system unstable.
+### 3. Install the painter (client)
 
-> **Windows DataLoader workers:** Use `--maxworkers 4` (or lower) when running on Windows to avoid paging file exhaustion during training. The default of 12 workers each importing scipy/skimage simultaneously can exceed available virtual memory:
-> ```
-> python -u main.py --syncdir <path> --maxworkers 4
-> ```
-
-#### Step 3 — Painter (client)
+**Mac / Linux:**
 
 ```bash
 cd painter
@@ -99,78 +48,123 @@ source env/bin/activate
 pip install -r requirements.txt
 ```
 
----
+**Windows (PowerShell):**
 
-### Running
-
-**Always run the trainer from `trainer/src/`**, not from `trainer/`. The imports are relative and only work from that directory.
-
-#### Start the trainer
-
-```bash
-cd trainer/src
-python -u main.py --syncdir /path/to/sync_dir
+```powershell
+cd painter
+py -3.11 -m venv env
+env\Scripts\activate
+pip install -r requirements.txt
 ```
 
-On Windows, add `--maxworkers 4` to avoid paging file exhaustion:
+### 4. Run
+
+Open two terminals — one for the trainer, one for the painter.
+
+**Trainer (always from `trainer/src/`** — imports are relative):
 
 ```bash
-cd trainer/src
-python -u main.py --syncdir D:\RootPainterSync --maxworkers 4
+# Mac / Linux
+cd trainer/src && python -u main.py --syncdir /path/to/sync_dir
+
+# Windows (must add --maxworkers 4 to avoid paging-file exhaustion)
+cd trainer\src
+python -u main.py --syncdir D:\RetinaPainterSync --maxworkers 4
 ```
 
-Or, after `pip install -e .` from the `trainer/` directory:
-
-```bash
-start-trainer --syncdir /path/to/sync_dir
-```
-
-**Model type is selected per project in the painter UI** — when you create a new project in the painter, a dropdown lets you choose between U-Net, RETFound + plain decoder, or RETFound + RFA-U-Net (recommended). The choice is saved in the project file and automatically sent to the trainer on each train/segment instruction. You do not need to pass `--model-type` on the command line.
-
-The `--model-type` CLI arg still exists as a server-side default (useful when the trainer is started independently and the painter has not yet sent a project instruction), but it is not normally needed.
-
-**`retfound_rfa` vs `retfound`:** Both use the same encoder weights and 224×224 tiles. `retfound_rfa` adds a U-Net decoder with skip connections from four intermediate ViT layers and attention gates, uses Tversky loss, and trains with AdamW. It achieves better boundary precision at the cost of slightly higher memory.
-
-**First-run note:** Loading the RETFound checkpoint (~3.95 GB) takes 2–5 minutes on both backends. Progress prints appear in the terminal. The first segmentation after startup also loads the model from disk, so expect a similar wait before the first overlay appears.
-
-**Sync directory:** The painter and trainer must use the same sync directory. On first launch, the painter will ask where to create the sync directory and writes that choice to `~/retina_painter_settings.json`. Store the sync directory on a drive with plenty of free space — each RETFound checkpoint is ~1.2 GB and several accumulate during training.
-
-#### Painter (client)
+**Painter:**
 
 ```bash
 cd painter/src/main/python
 python main.py
 ```
 
-When prompted, point the painter at the same sync directory used when starting the trainer.
+Point the painter at the same sync directory you passed to the trainer. On first launch, the painter writes that choice to `~/retina_painter_settings.json`.
+
+**First-run wait:** loading the 3.95 GB RETFound checkpoint takes 2–5 minutes on each trainer startup, and again before the first segmentation. Progress prints to the terminal.
+
+**Model type** is selected per project in the painter's New Project dialog (U-Net / RETFound + plain decoder / RETFound + RFA-U-Net). The choice is saved in the project file and forwarded to the trainer automatically.
 
 ---
 
-### Testing
+## How it works
+
+### Architecture
+
+Two independent Python applications talking through the filesystem:
+
+- **Painter** (`painter/`, PyQt5) — desktop GUI. Users open images, paint corrections on top of the model's segmentation overlay, and manage projects.
+- **Trainer** (`trainer/`, PyTorch) — server. Watches the sync directory, trains models when instructed, runs segmentation on demand, writes results back.
+
+The two communicate by writing JSON instruction files to `<syncdir>/instructions/`. No network protocol — the sync directory can be a local folder, sshfs, Dropbox, or Google Drive. This means the painter can run on a clinical workstation while the trainer runs on a GPU server, with cloud-storage as the only link.
+
+### Models
+
+| Mode | Encoder | Decoder | Loss | Notes |
+|---|---|---|---|---|
+| `unet` | scratch U-Net (Group Norm + residual) | — | Dice + 0.3 CE | Original RootPainter; 572×572 in / 500×500 out. |
+| `retfound` | RETFound ViT-Large (frozen pretraining) | 4-stage ConvTranspose2d | Dice + 0.3 CE | Plain decoder; 224×224 tiles. |
+| `retfound_rfa` (recommended) | RETFound ViT-Large | RFA-U-Net (skips Z6/Z12/Z18/Z24 + attention gates) | Tversky (α=0.7, β=0.3) | Freezes first 21 of 24 ViT blocks, trains last 3 + decoder with AdamW. Reaches Dice 95.04 / Jaccard 90.59 on choroid (Hayati et al., 2025). |
+
+The RETFound encoder is pretrained via masked autoencoder self-supervision on 1.6 million unlabeled retinal images, so it already knows what retinas look like. Training only has to learn the lesion-specific decision boundary, which is why ~100–200 labels are enough.
+
+### Annotation semantics — sparse corrective supervision
+
+Pixels the clinician explicitly paints as foreground or background are supervised with a 0/1 label. Untouched pixels are treated as **unknown** and excluded from the loss with zero gradient and zero loss-value contribution. This matters because earlier RootPainter code zeroed the logits at untouched pixels but didn't actually exclude them — every untouched pixel still incurred a constant CE penalty. RetinaPainter's masked loss fixes this; details and tests in [docs/supervision_plan.md](docs/supervision_plan.md).
+
+A future `unsure` annotation category is planned for explicitly ambiguous regions (blurry imagery, hard lesion edges) — also masked from loss but retained as metadata for curriculum learning and uncertainty evaluation. A dense corrected-target alternative (treating untouched as "model was right") remains a possible future research direction but is not the current contract.
+
+### Background — RootPainter and prior OCT work
+
+[RootPainter](https://github.com/Abe404/root_painter) ([Smith et al., New Phytologist 2022](https://doi.org/10.1111/nph.18387)) showed that a few hours of corrective annotation can match fully supervised performance, but it trains a U-Net from scratch on each new task. [Drakopoulos et al. (2024)](https://doi.org/10.3928/23258160-20240410-01) applied RootPainter to retinal OCT and reached ~90% / ~92% accuracy on RIPL and SDD detection from ~6 hours of annotation. RetinaPainter pushes further by combining the same corrective workflow with foundation-model pretraining, so the encoder no longer has to be learned from scratch every time.
+
+---
+
+## Roadmap
+
+| Phase | Description | Status |
+|---|---|---|
+| 1a | RETFound ViT-Large backbone + plain decoder | Complete |
+| 1b | RFA-U-Net attention decoder | Complete |
+| 1c | Model type UI dropdown, RetinaPainter rename | Complete |
+| 1d | Sparse-supervision masking fix (untouched pixels truly excluded from loss) | Complete |
+| 1e | Pre-split train/val folder option (avoids 5:1 router scrambling patient-level splits) | In progress (Slice 1: dialog UI shipped) |
+| 2a | `unsure` annotation category (painter brush + masked from loss + curriculum metadata) | Planned |
+| 2b | LoRA parameter-efficient fine-tuning | Planned |
+| 3 | Curriculum learning scheduler (driven in part by `unsure` density) | Planned |
+| 4 | Multi-class segmentation support | Planned |
+| 5 | Evaluate dense corrected-target training from sparse edits | Possible future work |
+
+---
+
+## Testing
 
 ```bash
-# RETFound plain decoder tests (no weight download needed)
 cd trainer/tests
-python -m pytest test_retfound.py -v
-
-# RFA-U-Net decoder + Tversky loss tests (no weight download needed)
-python -m pytest test_retfound_rfa.py -v
-
-# Existing unit tests (loss, unet, utilities)
-python -m pytest test_loss.py test_unet.py test_utils.py -v
+python -m pytest test_loss.py test_unet.py test_utils.py test_loss_masking.py \
+                  test_retfound.py test_retfound_rfa.py -v
 ```
 
-`test_retfound_rfa.py` (15 tests) covers:
-- `forward_multi_features` returns 4 skip tensors of shape `(B, 196, 1024)`
-- `RETFoundSegRFA` forward pass: `(B, 3, 224, 224)` → `(B, 2, 224, 224)`
-- Softmax sums to 1, no NaNs, gradients flow to decoder
-- `freeze_encoder_blocks(21)` correctly freezes first 21 blocks and leaves decoder trainable
-- Tversky loss: scalar output, non-negative, near-zero on perfect predictions, gradients flow
-- Tiling smoke test: 512×512 image tiles correctly to `(512, 512)` output
+Expected: 44 passed. Per-file coverage and end-to-end smoke scripts are documented in [trainer/tests/readme.md](trainer/tests/readme.md).
 
 ---
 
-### References
+## Windows troubleshooting
+
+Most Windows pain comes from CUDA DLLs being blocked by Smart App Control or the system paging file being too small for the RETFound model + DataLoader workers.
+
+- **`torchvision::nms` or DLL load error on first run:** Smart App Control blocked the CUDA DLLs. Run PowerShell **as Administrator** and unblock:
+  ```powershell
+  Get-ChildItem -Path "env\Lib\site-packages\torch\lib" -Filter "*.dll" | Unblock-File
+  Get-ChildItem -Path "env\Lib\site-packages\torchvision" -Recurse -Filter "*.pyd" | Unblock-File
+  ```
+- **`MemoryError` or "DLL load failed: paging file too small":** the default Windows paging file is too small for the RETFound model (~4 GB VRAM) plus DataLoader workers importing scipy/skimage. Move the paging file to a drive with ≥20 GB free; set Initial 16384 MB / Maximum 32768 MB via `sysdm.cpl` → Advanced → Performance → Virtual Memory. Never set a large paging file on a nearly-full drive — the system becomes unstable.
+- **Always pass `--maxworkers 4`** (or lower) on Windows. The default of 12 workers each importing large CUDA DLLs can exhaust virtual memory.
+- **OneDrive-synced repo paths can corrupt the venv.** Move the repo to a local path like `C:\Users\<you>\Desktop\` and recreate the venv if `env\Scripts\activate` produces strange path errors.
+
+---
+
+## References
 
 - Zhou, K. et al. (2023). A foundation model for generalizable disease detection from retinal images. *Nature*, 622, 156–163.
 - Hayati, A. et al. (2025). RFA-U-Net: A Foundation Model-Driven Approach for Accurate Choroid Segmentation in OCT Imaging. *medRxiv* 2025.05.03.25326923. https://doi.org/10.1101/2025.05.03.25326923
@@ -179,6 +173,6 @@ python -m pytest test_loss.py test_unet.py test_utils.py -v
 
 ---
 
-### Contributions
+## Contributions
 
-This is a research fork under active development. Please open an issue or discussion before submitting a pull request.
+Research fork under active development. Open an issue or discussion before submitting a pull request.

@@ -19,6 +19,15 @@ The key departure from RootPainter is the model backend: instead of a U-Net trai
 
 **Workstation mode:** `server_manager.py` in the painter can auto-launch a bundled trainer executable, or in dev mode, launch the trainer from `trainer/env/bin/python`.
 
+**Annotation routing — train vs. validation:** New annotations created in the painter are saved to either `<project>/annotations/train/` or `<project>/annotations/val/` based on a 5:1 file-count ratio (`get_new_annot_target_dir` in [painter/src/main/python/file_utils.py:73](painter/src/main/python/file_utils.py:73)). The router has **no awareness of patient ID or any other grouping** — it routes purely by maintaining the count ratio. For research projects with patient-level data leakage concerns (e.g. retinal OCT, where the same patient's scans look very similar), the default router can scramble an externally-prepared patient-level split, putting the same patient's images in both `train/` and `val/` and making the val-F1 early-stopping signal over-optimistic.
+
+Two workarounds today, with a planned permanent fix:
+- **Pre-populate empty annotation PNGs** at the correct train/val location before opening the painter. The painter's `get_annot_path` ([file_utils.py:58](painter/src/main/python/file_utils.py:58)) finds the existing file and `maybe_save_annotation` overwrites in place, never invoking the 5:1 router. The `prepare_annotations.py` script in the user's data-prep tooling does this.
+- **Manually move files** between `annotations/train/` and `annotations/val/` after sessions to enforce the desired split.
+- **In progress: explicit train/val source folders** — `train-val-split` branch. **Slice 1 shipped (dialog UI):** the New Project dialog has a "I have pre-split train/val folders" checkbox that swaps the single image-directory picker for two pickers and validates them (both inside `sync_dir/datasets/`, both contain images, no filename overlap). Slice 1 does not yet wire this through to project creation — clicking "Create project" in pre-split mode opens an info dialog explaining that the actual creation logic lands in Slice 2 (project creation + painter image loading) and Slice 3 (trainer instruction).
+
+This concern only affects the **internal validation signal during training** (model selection, early stopping). The held-out *test* set is always a separate physical folder outside the painter project, so its integrity is preserved automatically.
+
 ## Models
 
 ### U-Net (original, `--model-type unet`, default)
