@@ -1,5 +1,8 @@
 # RetinaPainter Supervision And Uncertainty Plan
 
+For terminology used below (sparse supervision, mask leak, `unsure`, etc.), see
+[glossary.md](glossary.md).
+
 ## Current Working Decision
 
 For now, keep **sparse corrective supervision** as the intended training policy:
