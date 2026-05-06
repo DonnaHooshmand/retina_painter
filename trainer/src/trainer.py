@@ -429,6 +429,8 @@ class Trainer():
             "skipped_untagged": skipped_untagged,
             "preset": spec["preset"],
             "stage_advance": spec["stage_advance"],
+            "epochs_per_stage": spec["epochs_per_stage"],
+            "allowed_tags_label": ", ".join(sorted(allowed_tags)),
         }
 
     def reset_progress_if_annots_changed(self):
@@ -472,10 +474,54 @@ class Trainer():
                 f"{curriculum_state['preset']},"
                 f"{curriculum_state['stage_advance']},"
                 f"{curriculum_state['stage_name']},"
-                f"{curriculum_state['stage_idx']}/{curriculum_state['stage_count']},"
+                f"{curriculum_state['stage_idx']}/"
+                f"{curriculum_state['stage_count']},"
                 f"selected={curriculum_state['selected_count']}/"
                 f"{curriculum_state['train_annot_count']},"
                 f"skipped_untagged={curriculum_state['skipped_untagged']}"
+            )
+            c = curriculum_state
+            stage_line = (
+                f"Curriculum: preset={c['preset']}  stage={c['stage_name']}  "
+                f"({c['stage_idx']}/{c['stage_count']})  "
+                f"advance={c['stage_advance']}  "
+                f"allowed_tags=[{c['allowed_tags_label']}]"
+            )
+            if c["stage_advance"] == "epochs":
+                eps = c["epochs_per_stage"]
+                te = self.training_epoch
+                idx0 = min(te // eps, c["stage_count"] - 1)
+                next_boundary = (idx0 + 1) * eps
+                stage_line += (
+                    f"  |  training_epoch={te}  epochs_per_stage={eps}  "
+                    f"effective_stage_index(0-based)={idx0}"
+                )
+                if idx0 < c["stage_count"] - 1:
+                    stage_line += f"  (next_stage_at_epoch>={next_boundary})"
+            print(stage_line, flush=True)
+            count_bits = [
+                f"{c['selected_count']}/{c['train_annot_count']} "
+                "training-annot images eligible for sampling this epoch "
+                "(tags allowed for this stage)."
+            ]
+            if c["skipped_untagged"]:
+                count_bits.append(
+                    f"{c['skipped_untagged']} train-annot file(s) untagged or invalid tag."
+                )
+            print("  " + " ".join(count_bits), flush=True)
+            print(
+                "  Batches draw random tiles from those images (see TrainDataset); "
+                "not one full pass per image per epoch.",
+                flush=True,
+            )
+        else:
+            n_train_annots = len(
+                [a for a in ls(train_annot_dir) if is_photo(a)])
+            print(
+                "Curriculum disabled: all "
+                f"{n_train_annots} training-annot images are eligible for sampling "
+                "this epoch (tile sampling from those images).",
+                flush=True,
             )
 
         if len(self.train_set) == 0:
