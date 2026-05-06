@@ -173,6 +173,18 @@ class RetinaPainter(QtWidgets.QMainWindow):
             return ('easy_only', 'easy_and_medium', 'all_buckets')
         return ('stage_1',)
 
+    def _curriculum_stage_display_names(self, preset):
+        """Human-readable stage names for the manual curriculum stage combo."""
+        if preset == 'easy_hard':
+            return ('Easy only', 'Easy + hard')
+        if preset == 'easy_medium_hard':
+            return (
+                'Easy only',
+                'Easy + medium',
+                'Easy + medium + hard',
+            )
+        return ('Stage 1',)
+
     def _curriculum_difficulty_tag_order(self):
         """Ordered tags allowed in the UI for the current curriculum preset."""
         preset = self.curriculum.get('preset')
@@ -200,33 +212,40 @@ class RetinaPainter(QtWidgets.QMainWindow):
         preset = self.curriculum.get('preset')
         n = self._curriculum_num_stages(preset)
         advance = self.curriculum.get('stage_advance', 'epochs')
-        labels = self._curriculum_stage_labels(preset)
+        display_names = self._curriculum_stage_display_names(preset)
         if advance == 'manual':
             msi = int(self.curriculum.get('manual_stage_index', 0))
             msi = max(0, min(msi, n - 1))
             self.curriculum['manual_stage_index'] = msi
-            name = labels[msi] if msi < len(labels) else labels[-1]
-            self.curriculum_stage_label.setText(
-                f"Curriculum stage {msi + 1}/{n}: {name}")
-            self.curriculum_next_stage_btn.setVisible(True)
-            self.curriculum_next_stage_btn.setEnabled(msi < n - 1)
+            self.curriculum_stage_label.setText('Stage:')
+            self.curriculum_stage_combo.blockSignals(True)
+            self.curriculum_stage_combo.clear()
+            for label in display_names[:n]:
+                self.curriculum_stage_combo.addItem(label)
+            self.curriculum_stage_combo.setCurrentIndex(msi)
+            self.curriculum_stage_combo.blockSignals(False)
+            self.curriculum_stage_combo.setVisible(True)
         else:
             eps = self.curriculum.get('epochs_per_stage', 10)
             self.curriculum_stage_label.setText(
                 f"Curriculum auto: next wider pool every {eps} trainer epochs")
-            self.curriculum_next_stage_btn.setVisible(False)
+            self.curriculum_stage_combo.setVisible(False)
 
-    def on_curriculum_next_stage(self):
+    def on_curriculum_stage_combo_changed(self, index):
+        if index < 0:
+            return
         if not self.curriculum.get('enabled'):
             return
         if self.curriculum.get('stage_advance') != 'manual':
             return
         preset = self.curriculum.get('preset')
         n = self._curriculum_num_stages(preset)
-        msi = int(self.curriculum.get('manual_stage_index', 0))
-        if msi >= n - 1:
+        if index >= n:
             return
-        self.curriculum['manual_stage_index'] = msi + 1
+        if int(self.curriculum.get('manual_stage_index', 0)) == index:
+            return
+
+        self.curriculum['manual_stage_index'] = index
 
         def merge_curriculum(data):
             cur = data.setdefault('curriculum', {})
@@ -1009,10 +1028,11 @@ class RetinaPainter(QtWidgets.QMainWindow):
         curriculum_stage_layout.setContentsMargins(0, 0, 0, 0)
         self.curriculum_stage_row.setLayout(curriculum_stage_layout)
         self.curriculum_stage_label = QtWidgets.QLabel('')
-        self.curriculum_next_stage_btn = QtWidgets.QPushButton('Next curriculum stage')
-        self.curriculum_next_stage_btn.clicked.connect(self.on_curriculum_next_stage)
+        self.curriculum_stage_combo = QtWidgets.QComboBox()
+        self.curriculum_stage_combo.currentIndexChanged.connect(
+            self.on_curriculum_stage_combo_changed)
         curriculum_stage_layout.addWidget(self.curriculum_stage_label)
-        curriculum_stage_layout.addWidget(self.curriculum_next_stage_btn)
+        curriculum_stage_layout.addWidget(self.curriculum_stage_combo)
         curriculum_difficulty_layout.addWidget(self.curriculum_stage_row)
 
         bottom_bar_layout.addWidget(self.curriculum_difficulty_column)

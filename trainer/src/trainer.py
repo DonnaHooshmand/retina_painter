@@ -56,6 +56,10 @@ CURRICULUM_STAGE_LABELS = {
 
 VALID_DIFFICULTY_TAGS = frozenset({"easy", "medium", "hard"})
 
+# DEBUG: set False to silence; remove this flag and the DEBUG block in
+# train_one_epoch when curriculum tile pool is verified.
+DEBUG_LOG_EPOCH_TRAIN_IMAGE_FILES = True
+
 from datasets import TrainDataset
 from metrics import get_metrics, get_metrics_str, get_metric_csv_row
 from model_utils import ensemble_segment
@@ -535,6 +539,21 @@ class Trainer():
             print('epoch validation duration', time.time() - before_val_time)
             self.training_epoch += 1
             return
+
+        if DEBUG_LOG_EPOCH_TRAIN_IMAGE_FILES:
+            if self.train_set.allowed_fnames is not None:
+                pool = sorted(self.train_set.allowed_fnames)
+                pool_desc = "curriculum stage pool (allowed_fnames)"
+            else:
+                pool = sorted([f for f in ls(train_annot_dir) if is_photo(f)])
+                pool_desc = "full train-annot pool (curriculum off)"
+            print(
+                f"[DEBUG epoch image pool] training_epoch={self.training_epoch} "
+                f"{pool_desc}  n={len(pool)}",
+                flush=True,
+            )
+            for fname in pool:
+                print(f"  [DEBUG epoch image pool] {fname}", flush=True)
 
         train_loader = DataLoader(self.train_set, self.bs, shuffle=True,
                                   # 12 workers is good for performance
