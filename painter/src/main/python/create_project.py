@@ -82,6 +82,7 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.model_type_combo.addItem("U-Net (original RootPainter)", "unet")
         self.model_type_combo.addItem("RETFound + plain decoder", "retfound")
         self.model_type_combo.addItem("RETFound + RFA-U-Net (recommended)", "retfound_rfa")
+        self.model_type_combo.addItem("FunduSegmenter (local adapter)", "fundusegmenter")
         self.model_type_combo.currentIndexChanged.connect(self.on_model_type_changed)
         self.layout.addWidget(self.model_type_combo)
 
@@ -105,6 +106,13 @@ class CreateProjectWidget(QtWidgets.QWidget):
                     f"<code>python setup_retfound.py --token …</code> from the repo root, "
                     f"or place <code>RETFound_oct.pth</code> in <code>~/.cache/retina_painter/</code>. "
                     f"Weights page: <a href=\"{page}\">{page}</a>"
+                )
+                self.retfound_hf_hint_label.setVisible(True)
+            elif self.model_type == "fundusegmenter":
+                self.retfound_hf_hint_label.setText(
+                    "FunduSegmenter uses the local implementation in "
+                    "<code>trainer/src/fundusegmenter_model.py</code>. "
+                    "No external weight download is required for random-weight startup."
                 )
                 self.retfound_hf_hint_label.setVisible(True)
             else:

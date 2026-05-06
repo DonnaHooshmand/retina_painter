@@ -55,10 +55,11 @@ def main() -> None:
     parser.add_argument(
         "--model-type",
         default="unet",
-        choices=["unet", "retfound", "retfound_rfa"],
+        choices=["unet", "retfound", "retfound_rfa", "fundusegmenter"],
         help=(
             "model backbone: 'unet' (default), 'retfound' (RETFound + plain decoder), "
-            "or 'retfound_rfa' (RETFound + RFA-U-Net attention decoder)"
+            "'retfound_rfa' (RETFound + RFA-U-Net attention decoder), "
+            "or 'fundusegmenter' (local FunduSegmenter adapter)"
         ),
     )
 

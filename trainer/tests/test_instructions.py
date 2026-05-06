@@ -162,3 +162,11 @@ def test_empty_instruction_does_not_move(sync_dir):
     # Empty instruction returns False — should stay and increment retry
     assert os.path.exists(fpath)
     assert t.retry_counts.get(fname, 0) == 1
+
+
+def test_apply_model_type_fundusegmenter(sync_dir):
+    t = Trainer(sync_dir=sync_dir, patch_size=572, model_type='unet')
+    t.apply_model_type('fundusegmenter')
+    assert t.model_type == 'fundusegmenter'
+    assert t.in_w == 572
+    assert t.out_w == 500
