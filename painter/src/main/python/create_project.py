@@ -79,11 +79,41 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.model_type_combo.addItem("U-Net (original RootPainter)", "unet")
         self.model_type_combo.addItem("RETFound + plain decoder", "retfound")
         self.model_type_combo.addItem("RETFound + RFA-U-Net (recommended)", "retfound_rfa")
+        self.model_type_combo.addItem("FunduSegmenter (local adapter)", "fundusegmenter")
         self.model_type_combo.currentIndexChanged.connect(self.on_model_type_changed)
         self.layout.addWidget(self.model_type_combo)
 
+        hint = QtWidgets.QLabel()
+        hint.setWordWrap(True)
+        hint.setOpenExternalLinks(True)
+        hint.setVisible(False)
+        self.layout.addWidget(hint)
+        self.retfound_hf_hint_label = hint
+        self.on_model_type_changed(self.model_type_combo.currentIndex())
+
     def on_model_type_changed(self, index):
         self.model_type = self.model_type_combo.itemData(index)
+        if hasattr(self, "retfound_hf_hint_label"):
+            if self.model_type in ("retfound", "retfound_rfa"):
+                import retina_painter as rp
+
+                page = rp.RETFOUND_WEIGHTS_HF_PAGE
+                self.retfound_hf_hint_label.setText(
+                    "RETFound setup: accept gated access on the Hub, then run "
+                    f"<code>python setup_retfound.py --token …</code> from the repo root, "
+                    f"or place <code>RETFound_oct.pth</code> in <code>~/.cache/retina_painter/</code>. "
+                    f"Weights page: <a href=\"{page}\">{page}</a>"
+                )
+                self.retfound_hf_hint_label.setVisible(True)
+            elif self.model_type == "fundusegmenter":
+                self.retfound_hf_hint_label.setText(
+                    "FunduSegmenter uses the local implementation in "
+                    "<code>trainer/src/fundusegmenter_model.py</code>. "
+                    "No external weight download is required for random-weight startup."
+                )
+                self.retfound_hf_hint_label.setVisible(True)
+            else:
+                self.retfound_hf_hint_label.setVisible(False)
 
     def add_radio_widget(self):
         radio_widget = QtWidgets.QWidget()

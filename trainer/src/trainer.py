@@ -92,6 +92,10 @@ class Trainer():
             self.out_w = 224
             # RFA decoder adds attention gates → slightly higher memory than plain retfound
             mem_per_item = 1_500_000_000
+        elif model_type == 'fundusegmenter':
+            self.in_w = patch_size
+            self.out_w = self.in_w - 72
+            mem_per_item = 3_800_000_000
         else:
             self.in_w = patch_size
             self.out_w = self.in_w - 72
@@ -266,6 +270,9 @@ class Trainer():
         if model_type in ('retfound', 'retfound_rfa'):
             self.in_w = 224
             self.out_w = 224
+        elif model_type == 'fundusegmenter':
+            self.in_w = self.patch_size
+            self.out_w = self.patch_size - 72
         else:
             self.in_w = self.patch_size
             self.out_w = self.patch_size - 72
@@ -299,6 +306,9 @@ class Trainer():
                 trainable = [p for p in self.model.parameters() if p.requires_grad]
                 self.optimizer = torch.optim.AdamW(trainable, lr=1e-4,
                                                    weight_decay=1e-4)
+            elif self.model_type == 'fundusegmenter':
+                self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01,
+                                                 momentum=0.99, nesterov=True)
             else:
                 self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01,
                                                  momentum=0.99, nesterov=True)
