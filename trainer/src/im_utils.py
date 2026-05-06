@@ -47,7 +47,7 @@ def normalize_tile(tile):
     assert np.max(tile) <= 1, f"tile max {np.max(tile)}"
     return tile
 
-def load_train_image_and_annot(dataset_dir, train_annot_dir):
+def load_train_image_and_annot(dataset_dir, train_annot_dir, candidate_fnames=None):
     max_attempts = 60
     attempts = 0
     # used for logging which file caused the problem.
@@ -66,8 +66,13 @@ def load_train_image_and_annot(dataset_dir, train_annot_dir):
             latest_im_path = None
 
             # This might take ages, profile and optimize
-            fnames = ls(train_annot_dir)
-            fnames = [a for a in fnames if is_photo(a)]
+            if candidate_fnames is None:
+                fnames = ls(train_annot_dir)
+                fnames = [a for a in fnames if is_photo(a)]
+            else:
+                fnames = [a for a in candidate_fnames if is_photo(a)]
+            if not fnames:
+                raise Exception("No annotation files available for sampling.")
             fname = random.sample(fnames, 1)[0]
             annot_path = os.path.join(train_annot_dir, fname)
             image_path_part = os.path.join(dataset_dir,

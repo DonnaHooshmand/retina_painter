@@ -39,7 +39,7 @@ Defined in `unet.py` (`UNetGNRes`). Uses Group Normalization (not Batch Norm) wi
 Defined across two files:
 
 - **`retfound_vit.py`** — `RETFoundViT`: ViT-Large (patch_size=16, embed_dim=1024, depth=24, num_heads=16) with sin-cos positional embeddings. `forward_features(x)` returns `(B, 196, 1024)` patch tokens (cls token dropped). Also exposes `forward_multi_features(x, indices)` which captures intermediate block outputs for RFA skip connections. Weights match the RETFound checkpoint format exactly.
-- **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`iszt/RETFound_mae_natureOCT`) on first use, caching to `~/.cache/retina_painter/`. **This repo is gated — users must request access at https://huggingface.co/iszt/RETFound_mae_natureOCT and authenticate via `huggingface_hub.login()` before the automatic download will work. In practice, use `setup_retfound.py` which downloads from Google Drive instead.**
+- **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`monish563/RETFOUND`) on first use, caching to `~/.cache/retina_painter/`. **That mirror is gated — users must accept access at https://huggingface.co/monish563/RETFOUND and authenticate via `huggingface_hub.login()` / `HF_TOKEN` before the automatic download will work.** `setup_retfound.py` can use Hugging Face or Google Drive.
 
 **Loss** (`loss.py`): Combined 0.7 Dice + 0.3 Cross-Entropy.
 
@@ -70,7 +70,7 @@ Each skip connection passes through an `_AttentionGate` (additive attention: Wg 
 
 **RETFound weight notes (shared by both retfound variants):**
 - The checkpoint is a full MAE checkpoint (~3.95 GB), not just encoder weights
-- `iszt/RETFound_mae_natureOCT` uses `model.safetensors` format on HuggingFace (not `.pth`); the `.pth` file is sourced from Google Drive (file ID: `1m6s7QYkjyjJDlpEuXm7Xp3PmjN-elfW2`) via `setup_retfound.py`
+- `iszt/RETFound_mae_natureOCT` on Hugging Face hosts `model.safetensors` for Transformers (not the MAE `.pth`). The ViT MAE checkpoint `RETFound_oct.pth` is downloaded from **`monish563/RETFOUND`** or Google Drive (file ID: `1m6s7QYkjyjJDlpEuXm7Xp3PmjN-elfW2`) via `setup_retfound.py`
 - Loading the checkpoint takes 2–5 minutes on each trainer startup — this is expected due to the file size
 
 **Key difference from retfound:** For both, `in_w = out_w = 224` (no valid-convolution crop). `retfound_rfa` consumes more VRAM due to storing 4 intermediate feature maps; the per-item memory estimate (1.5 GB) is the same conservative value used for plain `retfound`.
@@ -106,7 +106,7 @@ pip install -r requirements.txt
 - If `env\Scripts\activate` is blocked: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
 - PyTorch cu124 wheels do not exist for torch>=2.7; use cu126: `pip install torch==2.8.0+cu126 torchvision==0.23.0+cu126 --index-url https://download.pytorch.org/whl/cu126` before `pip install -r requirements.txt`. The download is ~2.5 GB and can take 10–20 minutes.
 - The `start-trainer` entry point is defined in `trainer/src/__init__.py` (not `main.py`) — both must be kept in sync when adding CLI arguments
-- RETFound weights require HuggingFace authentication; call `from huggingface_hub import login; login(token='...')` before first use, or use `setup_retfound.py --gdrive` to download from Google Drive without authentication
+- RETFound weights via Hub require accepting gated access on `monish563/RETFOUND` and `huggingface_hub.login()` / `HF_TOKEN`; or use `setup_retfound.py --gdrive` for Google Drive without Hub
 - **Windows Smart App Control** may block unsigned CUDA `.dll` and `.pyd` files from PyPI. If you see a `torchvision::nms` error or DLL import failure, run PowerShell **as Administrator** from the repo root and unblock:
   ```powershell
   Get-ChildItem -Path "trainer\env\Lib\site-packages\torch\lib" -Filter "*.dll" | Unblock-File
@@ -234,7 +234,7 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 
 **Model and infrastructure:**
 - `retfound_vit.py`: ViT-Large encoder matching RETFound checkpoint format; `flush=True` on all print statements for real-time terminal output
-- `retfound_model.py`: `RETFoundSeg` (encoder + decoder) + weight download helper; weights sourced from Google Drive (`1m6s7QYkjyjJDlpEuXm7Xp3PmjN-elfW2`) via `setup_retfound.py`; HuggingFace fallback available for users with `iszt/RETFound_mae_natureOCT` access
+- `retfound_model.py`: `RETFoundSeg` (encoder + decoder) + weight download helper; weights from Google Drive (`1m6s7QYkjyjJDlpEuXm7Xp3PmjN-elfW2`) or Hugging Face `monish563/RETFOUND` via `setup_retfound.py` / `download_retfound_weights()`
 - `main.py`: `--model-type` CLI arg
 - `src/__init__.py`: `start()` entry point updated to support `--model-type` (matches `main.py`); stdout/stderr reconfigured with `line_buffering=True` for Windows terminal output
 - `trainer.py`: model factory, `in_w=out_w=224` for retfound

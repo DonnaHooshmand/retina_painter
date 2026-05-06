@@ -70,7 +70,12 @@ from resize_images import ResizeWidget
 from keyboard_shortcuts_dialog import KeyboardShortcutsDialog
 from server_manager import find_trainer_launch, ServerManager, ServerLogDialog, check_trainer_status
 
-
+# Hugging Face: MAE checkpoint mirror for RETFound (RETFound_oct.pth). Keep in sync with
+# trainer/src/retfound_model.py (RETFOUND_HF_REPO / _MANUAL_DOWNLOAD_URL).
+RETFOUND_WEIGHTS_HF_REPO_ID = "monish563/RETFOUND"
+RETFOUND_WEIGHTS_HF_PAGE = "https://huggingface.co/monish563/RETFOUND"
+# Transformers-native RETFound OCT model (different artifact: model.safetensors).
+RETFOUND_TRANSFORMERS_HF_PAGE = "https://huggingface.co/iszt/RETFound_mae_natureOCT"
 
 use_plugin("pil")
 
@@ -116,6 +121,186 @@ class RetinaPainter(QtWidgets.QMainWindow):
         sys.excepthook = self.log_exception
         threading.excepthook = self.log_thread_exception
         self.initUI()
+
+    def _curriculum_num_stages(self, preset):
+        if preset == 'easy_hard':
+            return 2
+        if preset == 'easy_medium_hard':
+            return 3
+        return 1
+
+    def _normalize_loaded_curriculum(self, raw):
+        """Drop legacy auto-threshold curriculum; only user-tag presets are supported."""
+        if not raw or not raw.get('enabled'):
+            return {'enabled': False}
+        preset = raw.get('preset')
+        if preset not in ('easy_hard', 'easy_medium_hard'):
+            return {'enabled': False}
+        try:
+            eps = int(raw.get('epochs_per_stage', 10))
+        except (TypeError, ValueError):
+            eps = 10
+        eps = max(1, eps)
+        advance = raw.get('stage_advance') or 'epochs'
+        if advance not in ('manual', 'epochs'):
+            advance = 'epochs'
+
+        n_stages = self._curriculum_num_stages(preset)
+        manual_idx = 0
+        if advance == 'manual':
+            try:
+                manual_idx = int(raw.get('manual_stage_index', 0))
+            except (TypeError, ValueError):
+                manual_idx = 0
+            manual_idx = max(0, min(manual_idx, n_stages - 1))
+
+        out = {
+            'enabled': True,
+            'mode': 'static',
+            'stage_policy': 'cumulative',
+            'preset': preset,
+            'epochs_per_stage': eps,
+            'stage_advance': advance,
+        }
+        if advance == 'manual':
+            out['manual_stage_index'] = manual_idx
+        return out
+
+    def _curriculum_stage_labels(self, preset):
+        if preset == 'easy_hard':
+            return ('easy_only', 'easy_and_hard')
+        if preset == 'easy_medium_hard':
+            return ('easy_only', 'easy_and_medium', 'all_buckets')
+        return ('stage_1',)
+
+    def _curriculum_difficulty_tag_order(self):
+        """Ordered tags allowed in the UI for the current curriculum preset."""
+        preset = self.curriculum.get('preset')
+        if preset == 'easy_hard':
+            return ('easy', 'hard')
+        return ('easy', 'medium', 'hard')
+
+    def _rebuild_difficulty_combo_items(self):
+        """Not set + preset-specific tags (easy_hard omits medium)."""
+        labels = {'easy': 'Easy', 'medium': 'Medium', 'hard': 'Hard'}
+        self.difficulty_combo.blockSignals(True)
+        self.difficulty_combo.clear()
+        self.difficulty_combo.addItem('Not set', None)
+        for tag in self._curriculum_difficulty_tag_order():
+            self.difficulty_combo.addItem(labels[tag], tag)
+        self.difficulty_combo.blockSignals(False)
+
+    def _sync_curriculum_stage_controls(self):
+        if not hasattr(self, 'curriculum_stage_row'):
+            return
+        show = bool(self.curriculum.get('enabled'))
+        self.curriculum_stage_row.setVisible(show)
+        if not show:
+            return
+        preset = self.curriculum.get('preset')
+        n = self._curriculum_num_stages(preset)
+        advance = self.curriculum.get('stage_advance', 'epochs')
+        labels = self._curriculum_stage_labels(preset)
+        if advance == 'manual':
+            msi = int(self.curriculum.get('manual_stage_index', 0))
+            msi = max(0, min(msi, n - 1))
+            self.curriculum['manual_stage_index'] = msi
+            name = labels[msi] if msi < len(labels) else labels[-1]
+            self.curriculum_stage_label.setText(
+                f"Curriculum stage {msi + 1}/{n}: {name}")
+            self.curriculum_next_stage_btn.setVisible(True)
+            self.curriculum_next_stage_btn.setEnabled(msi < n - 1)
+        else:
+            eps = self.curriculum.get('epochs_per_stage', 10)
+            self.curriculum_stage_label.setText(
+                f"Curriculum auto: next wider pool every {eps} trainer epochs")
+            self.curriculum_next_stage_btn.setVisible(False)
+
+    def on_curriculum_next_stage(self):
+        if not self.curriculum.get('enabled'):
+            return
+        if self.curriculum.get('stage_advance') != 'manual':
+            return
+        preset = self.curriculum.get('preset')
+        n = self._curriculum_num_stages(preset)
+        msi = int(self.curriculum.get('manual_stage_index', 0))
+        if msi >= n - 1:
+            return
+        self.curriculum['manual_stage_index'] = msi + 1
+
+        def merge_curriculum(data):
+            cur = data.setdefault('curriculum', {})
+            cur.update(dict(self.curriculum))
+
+        self._save_project_json(merge_curriculum)
+        self._sync_curriculum_stage_controls()
+
+    def _annot_is_train(self):
+        ap = getattr(self, 'annot_path', None)
+        if not ap:
+            return False
+        ap = os.path.normpath(str(ap))
+        tp = os.path.normpath(str(self.train_annot_dir))
+        return ap.startswith(tp + os.sep) or ap == tp
+
+    def _curriculum_annot_split(self):
+        """Where the current annotation file lives — for curriculum UI only."""
+        ap = getattr(self, 'annot_path', None)
+        if not ap:
+            return 'none'
+        if self._annot_is_train():
+            return 'train'
+        return 'val'
+
+    def _save_project_json(self, update_fn):
+        """Read project JSON, apply update_fn(data), write atomically."""
+        with open(self.proj_file_path, 'r', encoding='utf-8') as json_file:
+            data = json.load(json_file)
+        update_fn(data)
+        tmp_path = str(self.proj_file_path) + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as json_file:
+            json.dump(data, json_file, indent=4)
+        os.replace(tmp_path, self.proj_file_path)
+
+    def _sync_difficulty_combo(self):
+        if not hasattr(self, 'difficulty_combo'):
+            return
+        show = bool(self.curriculum.get('enabled'))
+        self.difficulty_row.setVisible(show)
+        if not show:
+            return
+        self._rebuild_difficulty_combo_items()
+        split = self._curriculum_annot_split()
+        self.difficulty_combo.setEnabled(True)
+        if split == 'none':
+            self.difficulty_label.setText(
+                'Difficulty (not saved yet — curriculum uses train annos)')
+        else:
+            self.difficulty_label.setText('Difficulty')
+        tag = self.image_difficulty.get(self.png_fname)
+        self.difficulty_combo.blockSignals(True)
+        for i in range(self.difficulty_combo.count()):
+            if self.difficulty_combo.itemData(i) == tag:
+                self.difficulty_combo.setCurrentIndex(i)
+                break
+        else:
+            self.difficulty_combo.setCurrentIndex(0)
+        self.difficulty_combo.blockSignals(False)
+
+    def on_difficulty_changed(self, _index):
+        if not self.curriculum.get('enabled'):
+            return
+        tag = self.difficulty_combo.currentData()
+        if tag is None:
+            self.image_difficulty.pop(self.png_fname, None)
+        else:
+            self.image_difficulty[self.png_fname] = tag
+
+        def apply(data):
+            data['image_difficulty'] = dict(self.image_difficulty)
+            data['curriculum'] = dict(self.curriculum)
+
+        self._save_project_json(apply)
 
     def assign_sync_directory(self, sync_dir):
         self.sync_dir = sync_dir
@@ -226,6 +411,8 @@ class RetinaPainter(QtWidgets.QMainWindow):
         # None means the project was created before the model-type dropdown;
         # instructions will omit model_type so the trainer keeps its CLI default.
         self.model_type = settings.get('model_type', None)
+        self.image_difficulty = dict(settings.get('image_difficulty') or {})
+        self.curriculum = self._normalize_loaded_curriculum(settings.get('curriculum'))
 
         self.proj_file_path = proj_file_path
 
@@ -317,6 +504,8 @@ class RetinaPainter(QtWidgets.QMainWindow):
 
         self.segment_current_image()
         self.update_window_title()
+        self._sync_difficulty_combo()
+        self._sync_curriculum_stage_controls()
         self.log(f'update_file_end,fname:{os.path.basename(fpath)}')
 
 
@@ -798,6 +987,36 @@ class RetinaPainter(QtWidgets.QMainWindow):
         self.vis_widget.im_checkbox.stateChanged.connect(self.im_checkbox_change)
         bottom_bar_layout.addWidget(self.vis_widget)
 
+        self.curriculum_difficulty_column = QtWidgets.QWidget()
+        curriculum_difficulty_layout = QtWidgets.QVBoxLayout()
+        curriculum_difficulty_layout.setContentsMargins(0, 0, 0, 0)
+        curriculum_difficulty_layout.setSpacing(4)
+        self.curriculum_difficulty_column.setLayout(curriculum_difficulty_layout)
+
+        self.difficulty_row = QtWidgets.QWidget()
+        difficulty_layout = QtWidgets.QHBoxLayout()
+        difficulty_layout.setContentsMargins(0, 0, 0, 0)
+        self.difficulty_row.setLayout(difficulty_layout)
+        self.difficulty_label = QtWidgets.QLabel('Difficulty')
+        self.difficulty_combo = QtWidgets.QComboBox()
+        self.difficulty_combo.currentIndexChanged.connect(self.on_difficulty_changed)
+        difficulty_layout.addWidget(self.difficulty_label)
+        difficulty_layout.addWidget(self.difficulty_combo)
+        curriculum_difficulty_layout.addWidget(self.difficulty_row)
+
+        self.curriculum_stage_row = QtWidgets.QWidget()
+        curriculum_stage_layout = QtWidgets.QHBoxLayout()
+        curriculum_stage_layout.setContentsMargins(0, 0, 0, 0)
+        self.curriculum_stage_row.setLayout(curriculum_stage_layout)
+        self.curriculum_stage_label = QtWidgets.QLabel('')
+        self.curriculum_next_stage_btn = QtWidgets.QPushButton('Next curriculum stage')
+        self.curriculum_next_stage_btn.clicked.connect(self.on_curriculum_next_stage)
+        curriculum_stage_layout.addWidget(self.curriculum_stage_label)
+        curriculum_stage_layout.addWidget(self.curriculum_next_stage_btn)
+        curriculum_difficulty_layout.addWidget(self.curriculum_stage_row)
+
+        bottom_bar_layout.addWidget(self.curriculum_difficulty_column)
+
         # bottom bar right
         bottom_bar_r = QtWidgets.QWidget()
         bottom_bar_r_layout = QtWidgets.QVBoxLayout()
@@ -851,6 +1070,9 @@ class RetinaPainter(QtWidgets.QMainWindow):
             self.update_cursor()
             self.graphics_view.fit_to_view()
         QtCore.QTimer.singleShot(100, view_fix)
+
+        self._sync_difficulty_combo()
+        self._sync_curriculum_stage_controls()
 
     def track_changes(self):
         if self.tracking:
@@ -1370,6 +1592,6 @@ class RetinaPainter(QtWidgets.QMainWindow):
                                                     self.train_annot_dir,
                                                     self.val_annot_dir)
             self.metrics_plot.add_file_metrics(os.path.basename(self.image_path))
-
+            self._sync_difficulty_combo()
 
 

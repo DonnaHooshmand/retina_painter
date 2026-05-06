@@ -42,6 +42,7 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.selected_model = None
         self.use_random_weights = True
         self.model_type = 'unet'
+        self.curriculum_enabled = False
         self.sync_dir = sync_dir
         self.initUI()
 
@@ -54,12 +55,14 @@ class CreateProjectWidget(QtWidgets.QWidget):
 
         self.add_im_dir_widget()
         self.add_model_type_widget()
+        self.add_curriculum_widget()
         self.add_radio_widget()
         self.add_model_btn()
         if False:
             self.add_palette_widget()
         self.add_info_label()
         self.add_create_btn()
+        self.validate()
 
     def add_im_dir_widget(self):
         # Add specify image directory button
@@ -82,8 +85,30 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.model_type_combo.currentIndexChanged.connect(self.on_model_type_changed)
         self.layout.addWidget(self.model_type_combo)
 
+        hint = QtWidgets.QLabel()
+        hint.setWordWrap(True)
+        hint.setOpenExternalLinks(True)
+        hint.setVisible(False)
+        self.layout.addWidget(hint)
+        self.retfound_hf_hint_label = hint
+        self.on_model_type_changed(self.model_type_combo.currentIndex())
+
     def on_model_type_changed(self, index):
         self.model_type = self.model_type_combo.itemData(index)
+        if hasattr(self, "retfound_hf_hint_label"):
+            if self.model_type in ("retfound", "retfound_rfa"):
+                import retina_painter as rp
+
+                page = rp.RETFOUND_WEIGHTS_HF_PAGE
+                self.retfound_hf_hint_label.setText(
+                    "RETFound setup: accept gated access on the Hub, then run "
+                    f"<code>python setup_retfound.py --token …</code> from the repo root, "
+                    f"or place <code>RETFound_oct.pth</code> in <code>~/.cache/retina_painter/</code>. "
+                    f"Weights page: <a href=\"{page}\">{page}</a>"
+                )
+                self.retfound_hf_hint_label.setVisible(True)
+            else:
+                self.retfound_hf_hint_label.setVisible(False)
 
     def add_radio_widget(self):
         radio_widget = QtWidgets.QWidget()
@@ -102,6 +127,96 @@ class CreateProjectWidget(QtWidgets.QWidget):
         radio.name = "specify"
         radio.toggled.connect(self.on_radio_clicked)
         radio_layout.addWidget(radio)
+
+    def add_curriculum_widget(self):
+        curriculum_group = QtWidgets.QGroupBox("Curriculum learning")
+        curriculum_layout = QtWidgets.QFormLayout()
+        curriculum_group.setLayout(curriculum_layout)
+        self.layout.addWidget(curriculum_group)
+
+        self.curriculum_checkbox = QtWidgets.QCheckBox("Enable static curriculum")
+        self.curriculum_checkbox.stateChanged.connect(self.on_curriculum_toggle)
+        curriculum_layout.addRow(self.curriculum_checkbox)
+
+        self.curriculum_preset_combo = QtWidgets.QComboBox()
+        self.curriculum_preset_combo.addItem("easy -> easy+hard", "easy_hard")
+        self.curriculum_preset_combo.addItem("easy -> easy+medium -> easy+medium+hard", "easy_medium_hard")
+        self.curriculum_preset_combo.currentIndexChanged.connect(self.validate)
+        curriculum_layout.addRow("Preset", self.curriculum_preset_combo)
+
+        self.curriculum_stage_advance_combo = QtWidgets.QComboBox()
+        self.curriculum_stage_advance_combo.addItem(
+            "Manually — Next stage button in painter", "manual")
+        self.curriculum_stage_advance_combo.addItem(
+            "Automatically after N trainer epochs", "epochs")
+        self.curriculum_stage_advance_combo.currentIndexChanged.connect(
+            self.on_curriculum_stage_advance_changed)
+        curriculum_layout.addRow("Advance stage", self.curriculum_stage_advance_combo)
+
+        self.epochs_per_stage_spin = QtWidgets.QSpinBox()
+        self.epochs_per_stage_spin.setMinimum(1)
+        self.epochs_per_stage_spin.setMaximum(9999)
+        self.epochs_per_stage_spin.setValue(10)
+        curriculum_layout.addRow("Epochs per stage", self.epochs_per_stage_spin)
+
+        self.curriculum_help = QtWidgets.QLabel()
+        self.curriculum_help.setWordWrap(True)
+        curriculum_layout.addRow(self.curriculum_help)
+        self.curriculum_preset_combo.currentIndexChanged.connect(
+            self.update_curriculum_help_text)
+        self.on_curriculum_toggle(0)
+
+    def update_curriculum_help_text(self):
+        if not getattr(self, "curriculum_enabled", False):
+            self.curriculum_help.setText(
+                "Enable static curriculum to choose a preset; tag training images in the painter "
+                "with difficulty options that match the preset.")
+            return
+        preset = self.curriculum_preset_combo.currentData()
+        if preset == "easy_hard":
+            self.curriculum_help.setText(
+                "Tag each training image as easy or hard only. "
+                "Untagged training images are skipped until tagged. "
+                "Later stages add harder buckets (cumulative).")
+        else:
+            self.curriculum_help.setText(
+                "Tag each training image as easy, medium, or hard. "
+                "Untagged training images are skipped until tagged. "
+                "Later stages add harder buckets (cumulative).")
+
+    def on_curriculum_toggle(self, state):
+        self.curriculum_enabled = (state == QtCore.Qt.Checked)
+        for widget in [self.curriculum_preset_combo,
+                       self.curriculum_stage_advance_combo,
+                       self.curriculum_help]:
+            widget.setEnabled(self.curriculum_enabled)
+        self.update_curriculum_help_text()
+        self.on_curriculum_stage_advance_changed()
+        self.validate()
+
+    def on_curriculum_stage_advance_changed(self, _index=None):
+        if not getattr(self, "curriculum_enabled", False):
+            self.epochs_per_stage_spin.setEnabled(False)
+            return
+        advance = self.curriculum_stage_advance_combo.currentData()
+        self.epochs_per_stage_spin.setEnabled(advance == "epochs")
+
+    def get_curriculum_config(self):
+        if not self.curriculum_enabled:
+            return {"enabled": False}
+
+        advance = self.curriculum_stage_advance_combo.currentData()
+        out = {
+            "enabled": True,
+            "mode": "static",
+            "stage_policy": "cumulative",
+            "preset": self.curriculum_preset_combo.currentData(),
+            "stage_advance": advance,
+            "epochs_per_stage": int(self.epochs_per_stage_spin.value()),
+        }
+        if advance == "manual":
+            out["manual_stage_index"] = 0
+        return out
 
     def add_model_btn(self):
         model_label = QtWidgets.QLabel()
@@ -147,6 +262,8 @@ class CreateProjectWidget(QtWidgets.QWidget):
             self.validate()
 
     def validate(self):
+        if not hasattr(self, 'info_label') or not hasattr(self, 'create_project_btn'):
+            return
         self.proj_name = self.name_edit_widget.name
         if not self.proj_name:
             self.info_label.setText("Name must be specified to create project")
@@ -276,7 +393,9 @@ class CreateProjectWidget(QtWidgets.QWidget):
             'original_model_file': original_model_file,
             'location': str(PurePosixPath(project_location)),
             'file_names': all_fnames,
-            'model_type': self.model_type
+            'model_type': self.model_type,
+            'curriculum': self.get_curriculum_config(),
+            'image_difficulty': {},
         }
         # 'classes': self.palette_edit_widget.get_brush_data()
         with open(proj_file_path, 'w') as json_file:

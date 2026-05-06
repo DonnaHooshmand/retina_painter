@@ -15,4 +15,3 @@ torchvision==0.23.0; sys_platform == "darwin"
 # Windows/Linux CUDA 12.6 (baseline)
 torch==2.8.0+cu126; sys_platform != "darwin"
 torchvision==0.23.0+cu126; sys_platform != "darwin"
-

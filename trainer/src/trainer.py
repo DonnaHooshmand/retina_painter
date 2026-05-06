@@ -37,6 +37,25 @@ from torch.nn.functional import softmax
 from torch.utils.data import DataLoader
 from loss import combined_loss, tversky_loss
 
+CURRICULUM_PRESET_STAGES = {
+    "easy_hard": (
+        frozenset({"easy"}),
+        frozenset({"easy", "hard"}),
+    ),
+    "easy_medium_hard": (
+        frozenset({"easy"}),
+        frozenset({"easy", "medium"}),
+        frozenset({"easy", "medium", "hard"}),
+    ),
+}
+
+CURRICULUM_STAGE_LABELS = {
+    "easy_hard": ("easy_only", "easy_and_hard"),
+    "easy_medium_hard": ("easy_only", "easy_and_medium", "all_buckets"),
+}
+
+VALID_DIFFICULTY_TAGS = frozenset({"easy", "medium", "hard"})
+
 from datasets import TrainDataset
 from metrics import get_metrics, get_metrics_str, get_metric_csv_row
 from model_utils import ensemble_segment
@@ -85,6 +104,7 @@ class Trainer():
         self.train_config = None
         self.model = None
         self.first_loop = True
+        self.training_epoch = 0
 
         if model_type in ('retfound', 'retfound_rfa'):
             # Both RETFound variants use 224×224 tiles with no valid-convolution crop
@@ -161,9 +181,12 @@ class Trainer():
                 # if its a list fix each string in the list.
                 new_list = []
                 for e in v:
-                    new_val = e.replace('\\', '/')
-                    new_val = os.path.join(self.sync_dir,
-                                           os.path.normpath(new_val))
+                    if isinstance(e, str):
+                        new_val = e.replace('\\', '/')
+                        new_val = os.path.join(self.sync_dir,
+                                               os.path.normpath(new_val))
+                    else:
+                        new_val = e
                     new_list.append(new_val)
                 new_config[k] = new_list
             elif isinstance(v, str):
@@ -282,6 +305,7 @@ class Trainer():
             self.train_set = TrainDataset(self.train_config['train_annot_dir'],
                                           self.train_config['dataset_dir'],
                                           self.in_w, self.out_w)
+            self.training_epoch = 0
             model_paths = model_utils.get_latest_model_paths(model_dir, 1)
             if model_paths:
                 self.model = model_utils.load_model(model_paths[0],
@@ -304,6 +328,108 @@ class Trainer():
                                                  momentum=0.99, nesterov=True)
             self.model.train()
             self.training = True
+
+    def _seg_proj_path_for_model_dir(self, model_dir):
+        project_dir = Path(model_dir).parent
+        matches = list(project_dir.glob("*.seg_proj"))
+        if not matches:
+            return None
+        return str(matches[0])
+
+    def _read_curriculum_from_project(self):
+        """Load user-assigned curriculum from the project's .seg_proj next to model_dir."""
+        model_dir = self.train_config.get('model_dir')
+        if not model_dir:
+            return None, {}
+        seg_proj = self._seg_proj_path_for_model_dir(model_dir)
+        if not seg_proj:
+            return None, {}
+        try:
+            with open(seg_proj, 'r', encoding='utf-8') as handle:
+                data = json.load(handle)
+        except Exception as exc:
+            self.log(f"Curriculum: could not read {seg_proj}: {exc}")
+            return None, {}
+        cur = data.get("curriculum") or {}
+        if not cur.get("enabled"):
+            return None, {}
+        preset = cur.get("preset")
+        if preset not in CURRICULUM_PRESET_STAGES:
+            self.log("Curriculum: disabled (unknown or legacy preset).")
+            return None, {}
+        try:
+            epochs_per_stage = int(cur.get("epochs_per_stage", 10))
+        except (TypeError, ValueError):
+            epochs_per_stage = 10
+        epochs_per_stage = max(1, epochs_per_stage)
+        stages = CURRICULUM_PRESET_STAGES[preset]
+        stage_advance = cur.get("stage_advance") or "epochs"
+        if stage_advance not in ("manual", "epochs"):
+            stage_advance = "epochs"
+
+        manual_idx = 0
+        if stage_advance == "manual":
+            try:
+                manual_idx = int(cur.get("manual_stage_index", 0))
+            except (TypeError, ValueError):
+                manual_idx = 0
+            manual_idx = max(0, min(manual_idx, len(stages) - 1))
+
+        spec = {
+            "preset": preset,
+            "stages": stages,
+            "stage_count": len(stages),
+            "epochs_per_stage": epochs_per_stage,
+            "labels": CURRICULUM_STAGE_LABELS.get(
+                preset, tuple(f"stage_{i+1}" for i in range(len(stages)))),
+            "stage_advance": stage_advance,
+            "manual_stage_index": manual_idx,
+        }
+        image_difficulty = dict(data.get("image_difficulty") or {})
+        return spec, image_difficulty
+
+    def _apply_curriculum_subset(self):
+        spec, image_difficulty = self._read_curriculum_from_project()
+        if not spec:
+            self.train_set.set_allowed_fnames(None)
+            return None
+
+        annot_dir = self.train_config['train_annot_dir']
+        annot_fnames = [f for f in ls(annot_dir) if is_photo(f)]
+        if not annot_fnames:
+            self.train_set.set_allowed_fnames(None)
+            return None
+
+        if spec["stage_advance"] == "manual":
+            stage_idx = spec["manual_stage_index"]
+        else:
+            stage_idx = min(self.training_epoch // spec["epochs_per_stage"],
+                            spec["stage_count"] - 1)
+        allowed_tags = spec["stages"][stage_idx]
+        skipped_untagged = 0
+
+        selected = []
+        for fname in annot_fnames:
+            tag = image_difficulty.get(fname)
+            if tag not in VALID_DIFFICULTY_TAGS:
+                skipped_untagged += 1
+                continue
+            if tag in allowed_tags:
+                selected.append(fname)
+
+        stage_name = spec["labels"][stage_idx]
+
+        self.train_set.set_allowed_fnames(selected)
+        return {
+            "stage_name": stage_name,
+            "stage_idx": stage_idx + 1,
+            "stage_count": spec["stage_count"],
+            "selected_count": len(selected),
+            "train_annot_count": len(annot_fnames),
+            "skipped_untagged": skipped_untagged,
+            "preset": spec["preset"],
+            "stage_advance": spec["stage_advance"],
+        }
 
     def reset_progress_if_annots_changed(self):
         train_annot_dir = self.train_config['train_annot_dir']
@@ -338,6 +464,31 @@ class Trainer():
             self.first_loop = False
             self.write_message('Training started')
             self.log('Starting Training')
+
+        curriculum_state = self._apply_curriculum_subset()
+        if curriculum_state:
+            self.log(
+                "curriculum_stage,"
+                f"{curriculum_state['preset']},"
+                f"{curriculum_state['stage_advance']},"
+                f"{curriculum_state['stage_name']},"
+                f"{curriculum_state['stage_idx']}/{curriculum_state['stage_count']},"
+                f"selected={curriculum_state['selected_count']}/"
+                f"{curriculum_state['train_annot_count']},"
+                f"skipped_untagged={curriculum_state['skipped_untagged']}"
+            )
+
+        if len(self.train_set) == 0:
+            msg = ("Curriculum: no training images match this stage "
+                   "(tag training images in the painter: easy / medium / hard).")
+            print(msg, flush=True)
+            self.log(msg)
+            self.write_message("Curriculum_no_samples_this_stage")
+            before_val_time = time.time()
+            self.validation()
+            print('epoch validation duration', time.time() - before_val_time)
+            self.training_epoch += 1
+            return
 
         train_loader = DataLoader(self.train_set, self.bs, shuffle=True,
                                   # 12 workers is good for performance
@@ -420,6 +571,7 @@ class Trainer():
         before_val_time = time.time()
         self.validation()
         print('epoch validation duration', time.time() - before_val_time)
+        self.training_epoch += 1
 
     def log_metrics(self, name, metrics):
         fname = datetime.today().strftime('%Y-%m-%d')

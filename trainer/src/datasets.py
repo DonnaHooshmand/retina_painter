@@ -107,13 +107,27 @@ class TrainDataset(Dataset):
         self.dataset_dir = dataset_dir
         self.augmentor = UNetTransformer()
         self.min_epoch_tiles = min_epoch_tiles
+        self.allowed_fnames = None
 
     def __len__(self):
-        return max(self.min_epoch_tiles, len(ls(self.train_annot_dir)) * 2)
+        if self.allowed_fnames is not None and len(self.allowed_fnames) == 0:
+            return 0
+        if self.allowed_fnames is None:
+            annot_count = len(ls(self.train_annot_dir))
+        else:
+            annot_count = len(self.allowed_fnames)
+        return max(self.min_epoch_tiles, annot_count * 2)
+
+    def set_allowed_fnames(self, allowed_fnames):
+        if allowed_fnames is None:
+            self.allowed_fnames = None
+        else:
+            self.allowed_fnames = list(allowed_fnames)
 
     def __getitem__(self, _):
         image, annot, fname = load_train_image_and_annot(self.dataset_dir,
-                                                         self.train_annot_dir)
+                                                         self.train_annot_dir,
+                                                         candidate_fnames=self.allowed_fnames)
         tile_pad = (self.in_w - self.out_w) // 2
 
         # ensures each pixel is sampled with equal chance

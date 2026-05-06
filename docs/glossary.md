@@ -85,8 +85,10 @@ frozen) feature extractor. In RetinaPainter, the foundation model is RETFound.
 
 ### RETFound
 The ViT-Large backbone pre-trained by Zhou et al. on 1.6M retinal images.
-Loaded from the `iszt/RETFound_mae_natureOCT` checkpoint (or via Google Drive
-through `setup_retfound.py`). Used as the encoder in both `retfound` and
+Loaded from the MAE checkpoint `RETFound_oct.pth` on Hugging Face
+(`monish563/RETFOUND`) or via Google Drive through `setup_retfound.py`.
+(`iszt/RETFound_mae_natureOCT` is a separate Transformers `model.safetensors`
+release.) Used as the encoder in both `retfound` and
 `retfound_rfa` model types. ViT-Large = patch_size 16, embed_dim 1024,
 depth 24, num_heads 16.
 

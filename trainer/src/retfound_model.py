@@ -14,10 +14,12 @@ under ``~/.cache/retina_painter/``.
 If the HuggingFace Hub is unavailable (e.g. air-gapped compute), place the
 checkpoint at the cache path manually and the function will skip the download.
 
-Expected HuggingFace repository : ``rmaphoh/RETFound-MAE``
-Expected filename                : ``RETFound_oct.pth``
+Expected HuggingFace repository : ``monish563/RETFOUND`` (MAE ``.pth`` mirror; gated — accept access on the Hub first).
+Hub filenames tried              : ``RETFound_oct_weights.pth`` then ``RETFound_oct.pth`` (cached locally as ``RETFound_oct.pth``).
+For Transformers / ``model.safetensors`` see ``iszt/RETFound_mae_natureOCT``.
 """
 
+import shutil
 from pathlib import Path
 
 import torch
@@ -29,9 +31,11 @@ from retfound_vit import build_retfound_vit
 # Constants
 # ---------------------------------------------------------------------------
 
-RETFOUND_HF_REPO = "iszt/RETFound_mae_natureOCT"
+RETFOUND_HF_REPO = "monish563/RETFOUND"
+# Remote name(s) on Hub — must match your upload; local cache uses RETFOUND_OCT_FILENAME.
+RETFOUND_HF_REMOTE_FILENAME = "RETFound_oct_weights.pth"
 RETFOUND_OCT_FILENAME = "RETFound_oct.pth"
-_MANUAL_DOWNLOAD_URL = "https://huggingface.co/iszt/RETFound_mae_natureOCT"
+_MANUAL_DOWNLOAD_URL = "https://huggingface.co/monish563/RETFOUND"
 
 
 # ---------------------------------------------------------------------------
@@ -67,19 +71,45 @@ def download_retfound_weights(cache_dir: Path = None) -> Path:
 
     try:
         from huggingface_hub import hf_hub_download
+        from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
+
         print(f"Downloading RETFound OCT weights from HuggingFace ({RETFOUND_HF_REPO})…")
-        downloaded = hf_hub_download(
-            repo_id=RETFOUND_HF_REPO,
-            filename=RETFOUND_OCT_FILENAME,
-            local_dir=str(cache_dir),
-        )
-        return Path(downloaded)
+        try:
+            downloaded = hf_hub_download(
+                repo_id=RETFOUND_HF_REPO,
+                filename=RETFOUND_HF_REMOTE_FILENAME,
+                local_dir=str(cache_dir),
+            )
+        except EntryNotFoundError:
+            if RETFOUND_HF_REMOTE_FILENAME == RETFOUND_OCT_FILENAME:
+                raise
+            downloaded = hf_hub_download(
+                repo_id=RETFOUND_HF_REPO,
+                filename=RETFOUND_OCT_FILENAME,
+                local_dir=str(cache_dir),
+            )
+
+        src = Path(downloaded).resolve()
+        dst = local_path.resolve()
+        if src != dst:
+            if local_path.exists():
+                local_path.unlink()
+            shutil.move(str(src), str(dst))
+        return local_path
+    except RepositoryNotFoundError as exc:
+        raise RuntimeError(
+            f"Could not download RETFound weights automatically: {exc}\n"
+            f"The Hub repo '{RETFOUND_HF_REPO}' was not found or this account cannot see it.\n"
+            f"Log in with the same HF user that owns the model, accept gated access on the model page, "
+            f"and set RETFOUND_HF_REPO in retfound_model.py to your repo_id (e.g. YOUR_USERNAME/RETFOUND).\n"
+            f"Manual page: {_MANUAL_DOWNLOAD_URL}"
+        ) from exc
     except Exception as exc:
         raise RuntimeError(
             f"Could not download RETFound weights automatically: {exc}\n"
-            f"Please download '{RETFOUND_OCT_FILENAME}' manually from\n"
+            f"Please download '{RETFOUND_HF_REMOTE_FILENAME}' (or '{RETFOUND_OCT_FILENAME}') manually from\n"
             f"  {_MANUAL_DOWNLOAD_URL}\n"
-            f"and place it at:\n"
+            f"and save it as:\n"
             f"  {local_path}"
         ) from exc
 

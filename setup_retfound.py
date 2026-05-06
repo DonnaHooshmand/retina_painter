@@ -3,7 +3,7 @@ setup_retfound.py — First-time setup helper for RetinaPainter (RETFound mode)
 
 Downloads and caches the RETFound OCT weights.
 Sources tried in order:
-  1. HuggingFace Hub (iszt/RETFound_mae_natureOCT) — requires free account
+  1. HuggingFace Hub (monish563/RETFOUND) — gated; HF account + token after accepting access
   2. Google Drive (official release, no account needed)
 
 Run this once before using --model-type retfound.
@@ -86,7 +86,7 @@ def main():
     # Option A: Google Drive (no account needed)
     # ------------------------------------------------------------------ #
     if args.gdrive:
-        print("Downloading RETFound OCT weights from Google Drive (~330 MB)...")
+        print("Downloading RETFound OCT weights from Google Drive (~4 GB)...")
         print("This only happens once — weights are cached for future use.\n")
         if download_from_gdrive(CACHE_PATH):
             print(f"\nDone! Weights cached at:\n  {CACHE_PATH}")
@@ -110,8 +110,8 @@ def main():
     token = args.token
     if not token:
         print("The RETFound OCT weights can be downloaded two ways:\n")
-        print("  [1] HuggingFace Hub — requires a free account")
-        print("        https://huggingface.co/iszt/RETFound_mae_natureOCT")
+        print("  [1] HuggingFace Hub — gated; create a free account, accept access on the model page, then use a read token")
+        print("        https://huggingface.co/monish563/RETFOUND")
         print()
         print("  [2] Google Drive    — no account needed")
         print(f"        https://drive.google.com/file/d/{GDRIVE_FILE_ID}/view")
@@ -120,7 +120,7 @@ def main():
         if choice == "1":
             token = input("\nPaste your HuggingFace token: ").strip()
         else:
-            print("\nDownloading from Google Drive (~330 MB)...")
+            print("\nDownloading from Google Drive (~4 GB)...")
             print("This only happens once — weights are cached for future use.\n")
             if download_from_gdrive(CACHE_PATH):
                 print(f"\nDone! Weights cached at:\n  {CACHE_PATH}")
@@ -147,7 +147,7 @@ def main():
         print("Make sure you are running this script from the repo root.")
         sys.exit(1)
 
-    print("\nDownloading RETFound OCT weights from HuggingFace (~330 MB)...")
+    print("\nDownloading RETFound OCT weights from HuggingFace (~4 GB)...")
     print("This only happens once — weights are cached for future use.\n")
 
     try:

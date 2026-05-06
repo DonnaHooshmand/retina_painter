@@ -49,7 +49,10 @@ def fix_instruction_paths(old_config, sync_dir):
             # if its a list fix each string in the list.
             new_list = []
             for e in v:
-                new_val = fix_path(e, sync_dir)
+                if isinstance(e, (str, Path)):
+                    new_val = fix_path(e, sync_dir)
+                else:
+                    new_val = e
                 new_list.append(new_val)
             new_config[k] = new_list
         elif isinstance(v, str):

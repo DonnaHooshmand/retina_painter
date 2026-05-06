@@ -51,13 +51,15 @@ Before running in RETFound mode, download the pretrained weights (~3.95 GB) usin
 python setup_retfound.py
 ```
 
-This downloads `RETFound_oct.pth` from Google Drive to `~/.cache/retina_painter/`. The download happens only once. Run this from the repo root inside the trainer virtual environment (see below).
+This downloads `RETFound_oct.pth` to `~/.cache/retina_painter/` (Google Drive by default, or Hugging Face if you choose that path). The download happens only once. Run this from the repo root inside the trainer virtual environment (see below).
 
-If you have HuggingFace access approval for `iszt/RETFound_mae_natureOCT`, you can supply a token instead:
+For **Hugging Face**, accept gated access on [monish563/RETFOUND](https://huggingface.co/monish563/RETFOUND), then:
 
 ```bash
 python setup_retfound.py --token YOUR_HF_TOKEN
 ```
+
+The Transformers checkpoint at [iszt/RETFound_mae_natureOCT](https://huggingface.co/iszt/RETFound_mae_natureOCT) is a different file (`model.safetensors`); RetinaPainter’s trainer expects the MAE `.pth` from the mirror above or Drive.
 
 #### Step 2 — Trainer (server)
 
@@ -68,6 +70,8 @@ source env/bin/activate   # Windows: env\Scripts\activate
 pip install -r requirements.txt
 ```
 
+> **macOS:** If `python3` is Apple’s 3.9, install a supported version (e.g. `brew install python@3.12`) and run **`"$(brew --prefix python@3.12)/bin/python3.12" -m venv env`** instead of `python -m venv env` in Steps 2–3 (and the same for the painter). Check with `python3.12 --version`.
+>
 > **Windows users:** Python 3.11 or 3.12 is supported (3.13+ is not). Use `py -3.11 -m venv env` or `py -3.12 -m venv env` depending on what is installed. Activate with `env\Scripts\activate`. If activation is blocked, run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` first.
 
 > **PyTorch on Windows/Linux (CUDA):** Install PyTorch cu126 before the rest of requirements, since cu124 wheels do not exist for torch>=2.7. The download is ~2.5 GB and can take 10–20 minutes depending on your connection:
