@@ -36,7 +36,11 @@ from PIL import Image
 from skimage import img_as_float32
 from skimage.exposure import rescale_intensity
 
-from im_utils import load_train_image_and_annot
+from im_utils import (
+    load_train_image_and_annot,
+    load_train_image_and_annot_for_fname,
+    is_photo,
+)
 from file_utils import ls
 import im_utils
 import elastic
@@ -108,10 +112,40 @@ class TrainDataset(Dataset):
         self.augmentor = UNetTransformer()
         self.min_epoch_tiles = min_epoch_tiles
         self.allowed_fnames = None
+        self.cover_stage_images_per_epoch = False
+        self.tiles_per_image = 2
+
+    def _sorted_pool(self):
+        if self.allowed_fnames is None:
+            fnames = [a for a in ls(self.train_annot_dir) if is_photo(a)]
+        else:
+            fnames = list(self.allowed_fnames)
+        return sorted(fnames)
+
+    def fname_for_index(self, idx):
+        """Map a dataset index to the training annotation filename (curriculum cover-all)."""
+        pool = self._sorted_pool()
+        if not pool:
+            raise IndexError("empty training pool")
+        tiles = max(1, int(self.tiles_per_image))
+        image_idx = idx // tiles
+        return pool[image_idx % len(pool)]
+
+    def set_curriculum_sampling(self, cover_all, tiles_per_image=2):
+        self.cover_stage_images_per_epoch = bool(cover_all)
+        try:
+            tiles = int(tiles_per_image)
+        except (TypeError, ValueError):
+            tiles = 2
+        self.tiles_per_image = max(1, tiles)
 
     def __len__(self):
         if self.allowed_fnames is not None and len(self.allowed_fnames) == 0:
             return 0
+        if (self.cover_stage_images_per_epoch
+                and self.allowed_fnames is not None
+                and len(self.allowed_fnames) > 0):
+            return len(self.allowed_fnames) * max(1, int(self.tiles_per_image))
         if self.allowed_fnames is None:
             annot_count = len(ls(self.train_annot_dir))
         else:
@@ -124,10 +158,18 @@ class TrainDataset(Dataset):
         else:
             self.allowed_fnames = list(allowed_fnames)
 
-    def __getitem__(self, _):
-        image, annot, fname = load_train_image_and_annot(self.dataset_dir,
-                                                         self.train_annot_dir,
-                                                         candidate_fnames=self.allowed_fnames)
+    def __getitem__(self, idx):
+        if (self.cover_stage_images_per_epoch
+                and self.allowed_fnames is not None
+                and len(self.allowed_fnames) > 0):
+            fname = self.fname_for_index(idx)
+            image, annot, fname = load_train_image_and_annot_for_fname(
+                self.dataset_dir, self.train_annot_dir, fname)
+        else:
+            image, annot, fname = load_train_image_and_annot(
+                self.dataset_dir,
+                self.train_annot_dir,
+                candidate_fnames=self.allowed_fnames)
         tile_pad = (self.in_w - self.out_w) // 2
 
         # ensures each pixel is sampled with equal chance

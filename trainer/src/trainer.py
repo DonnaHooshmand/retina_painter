@@ -376,6 +376,11 @@ class Trainer():
         except (TypeError, ValueError):
             epochs_per_stage = 10
         epochs_per_stage = max(1, epochs_per_stage)
+        try:
+            tiles_per_image = int(cur.get("tiles_per_image", 2))
+        except (TypeError, ValueError):
+            tiles_per_image = 2
+        tiles_per_image = max(1, tiles_per_image)
         stages = CURRICULUM_PRESET_STAGES[preset]
         stage_advance = cur.get("stage_advance") or "epochs"
         if stage_advance not in ("manual", "epochs"):
@@ -394,6 +399,7 @@ class Trainer():
             "stages": stages,
             "stage_count": len(stages),
             "epochs_per_stage": epochs_per_stage,
+            "tiles_per_image": tiles_per_image,
             "labels": CURRICULUM_STAGE_LABELS.get(
                 preset, tuple(f"stage_{i+1}" for i in range(len(stages)))),
             "stage_advance": stage_advance,
@@ -406,12 +412,14 @@ class Trainer():
         spec, image_difficulty = self._read_curriculum_from_project()
         if not spec:
             self.train_set.set_allowed_fnames(None)
+            self.train_set.set_curriculum_sampling(False)
             return None
 
         annot_dir = self.train_config['train_annot_dir']
         annot_fnames = [f for f in ls(annot_dir) if is_photo(f)]
         if not annot_fnames:
             self.train_set.set_allowed_fnames(None)
+            self.train_set.set_curriculum_sampling(False)
             return None
 
         if spec["stage_advance"] == "manual":
@@ -434,6 +442,11 @@ class Trainer():
         stage_name = spec["labels"][stage_idx]
 
         self.train_set.set_allowed_fnames(selected)
+        tiles_per_image = spec["tiles_per_image"]
+        if selected:
+            self.train_set.set_curriculum_sampling(True, tiles_per_image)
+        else:
+            self.train_set.set_curriculum_sampling(False)
         return {
             "stage_name": stage_name,
             "stage_idx": stage_idx + 1,
@@ -444,6 +457,7 @@ class Trainer():
             "preset": spec["preset"],
             "stage_advance": spec["stage_advance"],
             "epochs_per_stage": spec["epochs_per_stage"],
+            "tiles_per_image": tiles_per_image,
             "allowed_tags_label": ", ".join(sorted(allowed_tags)),
         }
 
@@ -523,9 +537,12 @@ class Trainer():
                     f"{c['skipped_untagged']} train-annot file(s) untagged or invalid tag."
                 )
             print("  " + " ".join(count_bits), flush=True)
+            tpi = c.get("tiles_per_image", 2)
+            epoch_tiles = c["selected_count"] * tpi
             print(
-                "  Batches draw random tiles from those images (see TrainDataset); "
-                "not one full pass per image per epoch.",
+                f"  Each epoch: {c['selected_count']} stage image(s) × "
+                f"{tpi} random tile(s) per image = {epoch_tiles} training steps "
+                "(all stage images every epoch).",
                 flush=True,
             )
         else:

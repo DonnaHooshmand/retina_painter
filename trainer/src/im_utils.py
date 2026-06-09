@@ -47,6 +47,22 @@ def normalize_tile(tile):
     assert np.max(tile) <= 1, f"tile max {np.max(tile)}"
     return tile
 
+def load_train_image_and_annot_for_fname(dataset_dir, train_annot_dir, fname):
+    """Load one training image and annotation by annotation filename."""
+    annot_path = os.path.join(train_annot_dir, fname)
+    image_path_part = os.path.join(dataset_dir, os.path.splitext(fname)[0])
+    image_path_part = glob.escape(image_path_part)
+    matches = glob.glob(image_path_part + '.*')
+    if not matches:
+        raise Exception(f'Could not find image for annotation {fname}')
+    image_path = matches[0]
+    image = load_image(image_path)
+    annot = imread(annot_path).astype(bool)
+    assert np.sum(annot) > 0
+    assert image.shape[2] == 3
+    return image, annot, fname
+
+
 def load_train_image_and_annot(dataset_dir, train_annot_dir, candidate_fnames=None):
     max_attempts = 60
     attempts = 0
@@ -74,26 +90,8 @@ def load_train_image_and_annot(dataset_dir, train_annot_dir, candidate_fnames=No
             if not fnames:
                 raise Exception("No annotation files available for sampling.")
             fname = random.sample(fnames, 1)[0]
-            annot_path = os.path.join(train_annot_dir, fname)
-            image_path_part = os.path.join(dataset_dir,
-                                           os.path.splitext(fname)[0])
-            # it's possible the image has a different extenstion
-            # so use glob to get it
-            
-            # Use glob.escape to allow arbitrary strings in file paths,
-            # including [ and ]  
-            # For related bug See https://github.com/Abe404/root_painter/issues/87
-            image_path_part = glob.escape(image_path_part)
-            image_path = glob.glob(image_path_part + '.*')[0]
-            
-            latest_im_path = image_path
-            image = load_image(image_path)
-            latest_annot_path = annot_path
-            annot = imread(annot_path).astype(bool)
-            assert np.sum(annot) > 0
-            assert image.shape[2] == 3 # should be RGB
-            # also return fname for debugging purposes.
-            return image, annot, fname
+            return load_train_image_and_annot_for_fname(
+                dataset_dir, train_annot_dir, fname)
         except Exception as e:
             latest_error = e
             # This could be due to an empty annotation saved by the user.
@@ -107,7 +105,7 @@ def load_train_image_and_annot(dataset_dir, train_annot_dir, candidate_fnames=No
             raise Exception(f'Could not load photo {latest_im_path}, {latest_error}')
         else:
             # otherwise it must have failed on the annotation
-            raise Exception(f'Could not load annotation {latest_annot_path}, {e}')
+            raise Exception(f'Could not load annotation {latest_annot_path}, {latest_error}')
 
 
 def pad(image, width: int, mode='reflect', constant_values=0):

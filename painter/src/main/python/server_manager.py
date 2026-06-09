@@ -477,6 +477,38 @@ class TrainerStatusDialog(QtWidgets.QDialog):
         super().done(result)
 
 
+def query_trainer_status(sync_dir, instruction_dir, timeout=2.5):
+    """Poll trainer for status without showing a dialog.
+
+    Returns the status dict (with at least ``training`` bool) or None if the
+    trainer does not respond within *timeout* seconds.
+    """
+    response_path = os.path.join(str(sync_dir), 'trainer_status.json')
+
+    if os.path.isfile(response_path):
+        try:
+            os.remove(response_path)
+        except OSError:
+            pass
+
+    try:
+        send_instruction('trainer_status', {}, str(instruction_dir), str(sync_dir))
+    except FileNotFoundError:
+        return None
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        QtWidgets.QApplication.processEvents()
+        if os.path.isfile(response_path):
+            try:
+                with open(response_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (OSError, json.JSONDecodeError):
+                return None
+        time.sleep(0.1)
+    return None
+
+
 def check_trainer_status(sync_dir, instruction_dir,
                          workstation=False, opening_project=None,
                          parent=None):

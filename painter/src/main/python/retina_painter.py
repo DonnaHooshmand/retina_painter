@@ -68,7 +68,10 @@ from im_viewer import ContextViewer
 from random_split import RandomSplitWidget
 from resize_images import ResizeWidget
 from keyboard_shortcuts_dialog import KeyboardShortcutsDialog
-from server_manager import find_trainer_launch, ServerManager, ServerLogDialog, check_trainer_status
+from server_manager import (
+    find_trainer_launch, ServerManager, ServerLogDialog,
+    check_trainer_status, query_trainer_status,
+)
 
 # Hugging Face: MAE checkpoint mirror for RETFound (RETFound_oct.pth). Keep in sync with
 # trainer/src/retfound_model.py (RETFOUND_HF_REPO / _MANUAL_DOWNLOAD_URL).
@@ -80,6 +83,152 @@ RETFOUND_TRANSFORMERS_HF_PAGE = "https://huggingface.co/iszt/RETFound_mae_nature
 use_plugin("pil")
 
 Image.MAX_IMAGE_PIXELS = None
+
+
+class CurriculumSettingsDialog(QtWidgets.QDialog):
+    """Post-creation dialog to enable/disable curriculum, switch presets, and view class counts."""
+
+    def __init__(self, current_curriculum, counts_fn, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Curriculum Settings")
+        self.setMinimumWidth(420)
+        self._counts_fn = counts_fn  # callable(preset) -> {easy,medium,hard,not_labeled}
+        self._initial = dict(current_curriculum)
+
+        layout = QtWidgets.QVBoxLayout()
+        self.setLayout(layout)
+
+        # -- enable checkbox --
+        self.enable_cb = QtWidgets.QCheckBox("Enable curriculum learning")
+        self.enable_cb.setChecked(bool(current_curriculum.get('enabled', False)))
+        layout.addWidget(self.enable_cb)
+
+        # -- settings group (only active when enabled) --
+        self._settings_group = QtWidgets.QGroupBox("Curriculum options")
+        form = QtWidgets.QFormLayout()
+        self._settings_group.setLayout(form)
+        layout.addWidget(self._settings_group)
+
+        self._preset_combo = QtWidgets.QComboBox()
+        self._preset_combo.addItem("easy → easy+hard", "easy_hard")
+        self._preset_combo.addItem("easy → easy+medium → easy+medium+hard", "easy_medium_hard")
+        cur_preset = current_curriculum.get('preset', 'easy_hard')
+        idx = self._preset_combo.findData(cur_preset)
+        if idx >= 0:
+            self._preset_combo.setCurrentIndex(idx)
+        form.addRow("Preset", self._preset_combo)
+
+        self._advance_combo = QtWidgets.QComboBox()
+        self._advance_combo.addItem("Manually — Next stage button in painter", "manual")
+        self._advance_combo.addItem("Automatically after N trainer epochs", "epochs")
+        cur_advance = current_curriculum.get('stage_advance', 'epochs')
+        aidx = self._advance_combo.findData(cur_advance)
+        if aidx >= 0:
+            self._advance_combo.setCurrentIndex(aidx)
+        form.addRow("Advance stage", self._advance_combo)
+
+        self._epochs_spin = QtWidgets.QSpinBox()
+        self._epochs_spin.setMinimum(1)
+        self._epochs_spin.setMaximum(9999)
+        self._epochs_spin.setValue(int(current_curriculum.get('epochs_per_stage', 10)))
+        form.addRow("Epochs per stage", self._epochs_spin)
+
+        self._tiles_spin = QtWidgets.QSpinBox()
+        self._tiles_spin.setMinimum(1)
+        self._tiles_spin.setMaximum(9999)
+        self._tiles_spin.setValue(int(current_curriculum.get('tiles_per_image', 2)))
+        form.addRow("Tiles per image per epoch", self._tiles_spin)
+        tiles_help = QtWidgets.QLabel(
+            "Each epoch trains on every image in the current stage "
+            "this many times (random tile crops).")
+        tiles_help.setWordWrap(True)
+        form.addRow(tiles_help)
+
+        # -- counts panel --
+        counts_group = QtWidgets.QGroupBox("Training image labels")
+        counts_layout = QtWidgets.QVBoxLayout()
+        counts_group.setLayout(counts_layout)
+        layout.addWidget(counts_group)
+
+        self._counts_label = QtWidgets.QLabel()
+        self._counts_label.setWordWrap(True)
+        counts_layout.addWidget(self._counts_label)
+
+        # -- buttons --
+        btn_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+        # -- wire signals --
+        self.enable_cb.stateChanged.connect(self._on_enable_changed)
+        self._preset_combo.currentIndexChanged.connect(self._refresh_counts)
+        self._advance_combo.currentIndexChanged.connect(self._on_advance_changed)
+
+        # initial state
+        self._on_enable_changed(self.enable_cb.checkState())
+        self._refresh_counts()
+
+    def _on_enable_changed(self, _state):
+        enabled = self.enable_cb.isChecked()
+        self._settings_group.setEnabled(enabled)
+        self._refresh_counts()
+
+    def _on_advance_changed(self, _idx):
+        advance = self._advance_combo.currentData()
+        self._epochs_spin.setEnabled(advance == 'epochs')
+
+    def _refresh_counts(self):
+        preset = self._preset_combo.currentData()
+        counts = self._counts_fn(preset)
+        easy = counts.get('easy', 0)
+        medium = counts.get('medium', 0)
+        hard = counts.get('hard', 0)
+        not_labeled = counts.get('not_labeled', 0)
+        if preset == 'easy_medium_hard':
+            text = (f"Easy: {easy}    Medium: {medium}    Hard: {hard}"
+                    f"    Not labeled: {not_labeled}")
+        else:
+            text = f"Easy: {easy}    Hard: {hard}    Not labeled: {not_labeled}"
+        self._counts_label.setText(text)
+
+    def get_config(self):
+        """Return the curriculum dict the user configured."""
+        if not self.enable_cb.isChecked():
+            return {'enabled': False}
+        advance = self._advance_combo.currentData()
+        cfg = {
+            'enabled': True,
+            'mode': 'static',
+            'stage_policy': 'cumulative',
+            'preset': self._preset_combo.currentData(),
+            'stage_advance': advance,
+            'epochs_per_stage': int(self._epochs_spin.value()),
+            'tiles_per_image': int(self._tiles_spin.value()),
+        }
+        if advance == 'manual':
+            # reset to stage 0 only if preset changed; otherwise keep existing index
+            old_preset = self._initial.get('preset')
+            new_preset = cfg['preset']
+            if new_preset != old_preset:
+                cfg['manual_stage_index'] = 0
+            else:
+                cfg['manual_stage_index'] = int(self._initial.get('manual_stage_index', 0))
+        return cfg
+
+    def is_impactful_change(self):
+        """Return True if the saved config changes something that affects ongoing training."""
+        new = self.get_config()
+        old_enabled = bool(self._initial.get('enabled', False))
+        new_enabled = bool(new.get('enabled', False))
+        if old_enabled != new_enabled:
+            return True
+        if not new_enabled:
+            return False
+        return (new.get('preset') != self._initial.get('preset') or
+                new.get('stage_advance') != self._initial.get('stage_advance') or
+                new.get('tiles_per_image') != self._initial.get('tiles_per_image', 2))
 
 
 class RetinaPainter(QtWidgets.QMainWindow):
@@ -141,6 +290,11 @@ class RetinaPainter(QtWidgets.QMainWindow):
         except (TypeError, ValueError):
             eps = 10
         eps = max(1, eps)
+        try:
+            tiles_per_image = int(raw.get('tiles_per_image', 2))
+        except (TypeError, ValueError):
+            tiles_per_image = 2
+        tiles_per_image = max(1, tiles_per_image)
         advance = raw.get('stage_advance') or 'epochs'
         if advance not in ('manual', 'epochs'):
             advance = 'epochs'
@@ -160,6 +314,7 @@ class RetinaPainter(QtWidgets.QMainWindow):
             'stage_policy': 'cumulative',
             'preset': preset,
             'epochs_per_stage': eps,
+            'tiles_per_image': tiles_per_image,
             'stage_advance': advance,
         }
         if advance == 'manual':
@@ -320,6 +475,99 @@ class RetinaPainter(QtWidgets.QMainWindow):
             data['curriculum'] = dict(self.curriculum)
 
         self._save_project_json(apply)
+        self._sync_curriculum_counts_display()
+
+    def _count_difficulty_labels(self, preset):
+        """Return dict with easy/medium/hard/not_labeled counts for training annotations.
+
+        Only files that have a matching annotation in train_annot_dir are counted.
+        Labels that are not valid for the given preset are bucketed into not_labeled.
+        """
+        if preset == 'easy_hard':
+            valid_tags = {'easy', 'hard'}
+        else:
+            valid_tags = {'easy', 'medium', 'hard'}
+
+        counts = {t: 0 for t in valid_tags}
+        counts['not_labeled'] = 0
+
+        try:
+            train_fnames = set(os.listdir(str(self.train_annot_dir)))
+        except OSError:
+            return counts
+
+        for fname in train_fnames:
+            tag = self.image_difficulty.get(fname)
+            if tag in valid_tags:
+                counts[tag] += 1
+            else:
+                counts['not_labeled'] += 1
+
+        return counts
+
+    def _sync_curriculum_counts_display(self):
+        """Refresh the compact counts label in the bottom bar."""
+        if not hasattr(self, 'curriculum_counts_label'):
+            return
+        enabled = bool(self.curriculum.get('enabled'))
+        self.curriculum_counts_row.setVisible(enabled)
+        if not enabled:
+            return
+        preset = self.curriculum.get('preset', 'easy_hard')
+        counts = self._count_difficulty_labels(preset)
+        easy = counts.get('easy', 0)
+        medium = counts.get('medium', 0)
+        hard = counts.get('hard', 0)
+        not_labeled = counts.get('not_labeled', 0)
+        if preset == 'easy_medium_hard':
+            text = (f"Easy: {easy} | Medium: {medium} | Hard: {hard} "
+                    f"| Not labeled: {not_labeled}")
+        else:
+            text = f"Easy: {easy} | Hard: {hard} | Not labeled: {not_labeled}"
+        self.curriculum_counts_label.setText(text)
+
+    def open_curriculum_settings_dialog(self):
+        """Open the Curriculum Settings dialog from the Network menu."""
+        dlg = CurriculumSettingsDialog(
+            current_curriculum=dict(self.curriculum),
+            counts_fn=self._count_difficulty_labels,
+            parent=self,
+        )
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        new_cfg = dlg.get_config()
+
+        # Only prompt to stop training when the trainer reports it is actually running.
+        if dlg.is_impactful_change():
+            status_info = query_trainer_status(self.sync_dir, self.instruction_dir)
+            training_active = bool(status_info and status_info.get('training'))
+            if training_active:
+                reply = QtWidgets.QMessageBox.question(
+                    self,
+                    "Stop training?",
+                    "Training is currently running. Curriculum changes require stopping training.\n\n"
+                    "Stop training now and apply the new settings?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+                    QtWidgets.QMessageBox.Cancel,
+                )
+                if reply != QtWidgets.QMessageBox.Yes:
+                    return
+                self.stop_training()
+
+        # Save to .seg_proj
+        def apply(data):
+            data['curriculum'] = new_cfg
+
+        self._save_project_json(apply)
+
+        # Update in-memory state
+        self.curriculum = self._normalize_loaded_curriculum(new_cfg)
+
+        # Refresh all curriculum UI
+        self._sync_difficulty_combo()
+        self._sync_curriculum_stage_controls()
+        self._sync_curriculum_counts_display()
 
     def assign_sync_directory(self, sync_dir):
         self.sync_dir = sync_dir
@@ -525,6 +773,7 @@ class RetinaPainter(QtWidgets.QMainWindow):
         self.update_window_title()
         self._sync_difficulty_combo()
         self._sync_curriculum_stage_controls()
+        self._sync_curriculum_counts_display()
         self.log(f'update_file_end,fname:{os.path.basename(fpath)}')
 
 
@@ -1035,6 +1284,15 @@ class RetinaPainter(QtWidgets.QMainWindow):
         curriculum_stage_layout.addWidget(self.curriculum_stage_combo)
         curriculum_difficulty_layout.addWidget(self.curriculum_stage_row)
 
+        # counts summary row (Easy: N | Hard: N | Not labeled: N)
+        self.curriculum_counts_row = QtWidgets.QWidget()
+        curriculum_counts_layout = QtWidgets.QHBoxLayout()
+        curriculum_counts_layout.setContentsMargins(0, 0, 0, 0)
+        self.curriculum_counts_row.setLayout(curriculum_counts_layout)
+        self.curriculum_counts_label = QtWidgets.QLabel('')
+        curriculum_counts_layout.addWidget(self.curriculum_counts_label)
+        curriculum_difficulty_layout.addWidget(self.curriculum_counts_row)
+
         bottom_bar_layout.addWidget(self.curriculum_difficulty_column)
 
         # bottom bar right
@@ -1093,6 +1351,7 @@ class RetinaPainter(QtWidgets.QMainWindow):
 
         self._sync_difficulty_combo()
         self._sync_curriculum_stage_controls()
+        self._sync_curriculum_counts_display()
 
     def track_changes(self):
         if self.tracking:
@@ -1322,8 +1581,11 @@ class RetinaPainter(QtWidgets.QMainWindow):
         stop_training_btn.triggered.connect(self.stop_training)
         network_menu.addAction(stop_training_btn)
 
-
-
+        # curriculum settings (enable/disable + preset + counts)
+        curriculum_settings_btn = QtWidgets.QAction(
+            QtGui.QIcon('missing.png'), 'Curriculum Settings...', self)
+        curriculum_settings_btn.triggered.connect(self.open_curriculum_settings_dialog)
+        network_menu.addAction(curriculum_settings_btn)
 
 
         if self.server_manager:
@@ -1420,6 +1682,24 @@ class RetinaPainter(QtWidgets.QMainWindow):
 
 
     def start_training(self):
+        # When curriculum is active, warn the user if any training images are unclassified.
+        if self.curriculum.get('enabled'):
+            preset = self.curriculum.get('preset', 'easy_hard')
+            counts = self._count_difficulty_labels(preset)
+            not_labeled = counts.get('not_labeled', 0)
+            if not_labeled > 0:
+                reply = QtWidgets.QMessageBox.question(
+                    self,
+                    "Unlabeled images",
+                    f"{not_labeled} training image(s) have not been labeled as "
+                    f"Easy/Hard (or the required difficulty for your preset).\n\n"
+                    f"These will be skipped during training. Continue anyway?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+                    QtWidgets.QMessageBox.Cancel,
+                )
+                if reply != QtWidgets.QMessageBox.Yes:
+                    return
+
         self.messages_label.setText("Starting training...")
         content = {
             "model_dir": self.model_dir,

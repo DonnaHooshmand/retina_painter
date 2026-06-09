@@ -167,6 +167,12 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.epochs_per_stage_spin.setValue(10)
         curriculum_layout.addRow("Epochs per stage", self.epochs_per_stage_spin)
 
+        self.tiles_per_image_spin = QtWidgets.QSpinBox()
+        self.tiles_per_image_spin.setMinimum(1)
+        self.tiles_per_image_spin.setMaximum(9999)
+        self.tiles_per_image_spin.setValue(2)
+        curriculum_layout.addRow("Tiles per image per epoch", self.tiles_per_image_spin)
+
         self.curriculum_help = QtWidgets.QLabel()
         self.curriculum_help.setWordWrap(True)
         curriculum_layout.addRow(self.curriculum_help)
@@ -185,17 +191,22 @@ class CreateProjectWidget(QtWidgets.QWidget):
             self.curriculum_help.setText(
                 "Tag each training image as easy or hard only. "
                 "Untagged training images are skipped until tagged. "
-                "Later stages add harder buckets (cumulative).")
+                "Later stages add harder buckets (cumulative). "
+                "Each epoch uses every image in the current stage "
+                "(random tiles per image).")
         else:
             self.curriculum_help.setText(
                 "Tag each training image as easy, medium, or hard. "
                 "Untagged training images are skipped until tagged. "
-                "Later stages add harder buckets (cumulative).")
+                "Later stages add harder buckets (cumulative). "
+                "Each epoch uses every image in the current stage "
+                "(random tiles per image).")
 
     def on_curriculum_toggle(self, state):
         self.curriculum_enabled = (state == QtCore.Qt.Checked)
         for widget in [self.curriculum_preset_combo,
                        self.curriculum_stage_advance_combo,
+                       self.tiles_per_image_spin,
                        self.curriculum_help]:
             widget.setEnabled(self.curriculum_enabled)
         self.update_curriculum_help_text()
@@ -221,6 +232,7 @@ class CreateProjectWidget(QtWidgets.QWidget):
             "preset": self.curriculum_preset_combo.currentData(),
             "stage_advance": advance,
             "epochs_per_stage": int(self.epochs_per_stage_spin.value()),
+            "tiles_per_image": int(self.tiles_per_image_spin.value()),
         }
         if advance == "manual":
             out["manual_stage_index"] = 0
