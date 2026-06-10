@@ -53,6 +53,41 @@ def all_image_paths_in_dir(dir_path):
     return image_paths
 
 
+# Unsure annotation: shown to the clinician in yellow (distinct from the blue
+# segmentation overlay) but stored in the blue channel so the trainer's
+# R=fg / G=bg / B=unsure decoding is unchanged. See datasets.py. Yellow is
+# red+green, which would collide with the foreground and background channels,
+# so we recolour at the save/load boundary instead of storing yellow.
+UNSURE_DISPLAY_RGB = (255, 255, 0)   # yellow on screen
+UNSURE_STORAGE_RGB = (0, 0, 255)     # blue on disk (channel 2 / B)
+
+
+def recolor_pixmap(pixmap, src_rgb, dst_rgb):
+    """Return a copy of *pixmap* with every pixel whose RGB exactly equals
+    *src_rgb* changed to *dst_rgb*. Alpha is preserved. Exact-match is safe
+    because the canvas paints with CompositionMode_Source and no antialiasing,
+    so annotation pixels are solid single colours."""
+    image = pixmap.toImage().convertToFormat(QtGui.QImage.Format_ARGB32)
+    rgb = qimage2ndarray.rgb_view(image).copy()      # (H, W, 3) uint8, RGB order
+    alpha = qimage2ndarray.alpha_view(image).copy()  # (H, W) uint8
+    match = ((rgb[:, :, 0] == src_rgb[0]) &
+             (rgb[:, :, 1] == src_rgb[1]) &
+             (rgb[:, :, 2] == src_rgb[2]))
+    rgb[match] = dst_rgb
+    rgba = np.dstack([rgb, alpha])                   # (H, W, 4)
+    return QtGui.QPixmap.fromImage(qimage2ndarray.array2qimage(rgba))
+
+
+def annot_display_to_storage(pixmap):
+    """Yellow (on-screen) unsure pixels -> blue (on-disk) before saving."""
+    return recolor_pixmap(pixmap, UNSURE_DISPLAY_RGB, UNSURE_STORAGE_RGB)
+
+
+def annot_storage_to_display(pixmap):
+    """Blue (on-disk) unsure pixels -> yellow (on-screen) after loading."""
+    return recolor_pixmap(pixmap, UNSURE_STORAGE_RGB, UNSURE_DISPLAY_RGB)
+
+
 def np_im_to_pixmap(np_im):
     # some (png) images were float64 and appeared very 
     # dark after conversion to pixmap.

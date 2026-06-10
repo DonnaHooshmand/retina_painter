@@ -43,6 +43,16 @@ class GraphicsScene(QtWidgets.QGraphicsScene):
         # be created on project creation.
         self.foreground_color = QtGui.QColor(255, 0, 0, 180)
         self.background_color = QtGui.QColor(0, 255, 0, 180)
+        # Unsure brush: the clinician marks regions they cannot confidently
+        # label. Shown in YELLOW on screen so it stays distinct from the blue
+        # segmentation overlay, the red foreground and the green background.
+        # On disk it is stored in the BLUE channel of the annotation PNG
+        # (yellow = red + green would collide with the fg/bg channels). The
+        # painter converts yellow<->blue at save/load time; the trainer reads
+        # R=foreground, G=background, B=unsure and excludes unsure pixels from
+        # the loss (see im_utils.annot_display_to_storage and
+        # trainer/src/datasets.py).
+        self.unsure_color = QtGui.QColor(255, 255, 0, 180)
         self.eraser_color = QtGui.QColor(255, 105, 180, 0)
         self.brush_color = self.foreground_color
 

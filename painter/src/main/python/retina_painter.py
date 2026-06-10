@@ -425,7 +425,10 @@ class RetinaPainter(QtWidgets.QMainWindow):
     def update_annot(self):
         # if annot file is present then load
         if self.annot_path and os.path.isfile(self.annot_path):
-            self.annot_pixmap = QtGui.QPixmap(self.annot_path)
+            # On disk, unsure pixels live in the blue channel; recolour them
+            # back to the on-screen yellow so the Unsure brush round-trips.
+            self.annot_pixmap = im_utils.annot_storage_to_display(
+                QtGui.QPixmap(self.annot_path))
         else:
             # otherwise use blank
             self.annot_pixmap = QtGui.QPixmap(self.im_width, self.im_height)
@@ -970,6 +973,11 @@ class RetinaPainter(QtWidgets.QMainWindow):
         brush_menu.addAction(background_color_action)
         background_color_action.triggered.connect(self.set_background_color)
 
+        unsure_color_action = QtWidgets.QAction(QtGui.QIcon(""), "Unsure", self)
+        unsure_color_action.setShortcut("U")
+        brush_menu.addAction(unsure_color_action)
+        unsure_color_action.triggered.connect(self.set_unsure_color)
+
         eraser_color_action = QtWidgets.QAction(QtGui.QIcon(""), "Eraser", self)
         eraser_color_action.setShortcut("E")
         brush_menu.addAction(eraser_color_action)
@@ -1275,6 +1283,10 @@ class RetinaPainter(QtWidgets.QMainWindow):
         self.scene.brush_color = self.scene.background_color
         self.update_cursor()
 
+    def set_unsure_color(self, _event):
+        self.scene.brush_color = self.scene.unsure_color
+        self.update_cursor()
+
     def set_eraser_color(self, _event):
         self.scene.brush_color = self.scene.eraser_color
         self.update_cursor()
@@ -1363,8 +1375,11 @@ class RetinaPainter(QtWidgets.QMainWindow):
     def save_annotation(self):
         if self.scene.annot_pixmap:
             self.log(f'save_annotation,fname:{self.png_fname}')
+            # The canvas shows the Unsure brush as yellow; convert those pixels
+            # to the blue storage channel so the trainer reads R=fg/G=bg/B=unsure.
+            storage_pixmap = im_utils.annot_display_to_storage(self.scene.annot_pixmap)
             self.annot_path = maybe_save_annotation(self.proj_location,
-                                                    self.scene.annot_pixmap,
+                                                    storage_pixmap,
                                                     self.annot_path,
                                                     self.png_fname,
                                                     self.train_annot_dir,

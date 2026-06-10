@@ -28,6 +28,7 @@ class KeyboardShortcutsDialog(QtWidgets.QDialog):
         shortcuts = [
             ("Foreground", "Q"),
             ("Background", "W"),
+            ("Unsure", "U"),
             ("Eraser", "E"),
             ("Undo", "Z"),
             ("Redo", "Ctrl+Shift+Z"),
