@@ -43,6 +43,7 @@ class GraphicsScene(QtWidgets.QGraphicsScene):
         # be created on project creation.
         self.foreground_color = QtGui.QColor(255, 0, 0, 180)
         self.background_color = QtGui.QColor(0, 255, 0, 180)
+        self.unsure_color = QtGui.QColor(0, 0, 255, 180)
         self.eraser_color = QtGui.QColor(255, 105, 180, 0)
         self.brush_color = self.foreground_color
 

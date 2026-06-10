@@ -24,6 +24,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # too many public methods
 
+RETFOUND_WEIGHTS_HF_PAGE = "https://huggingface.co/iszt/RETFound_mae_natureOCT"
+
 import sys
 import subprocess
 import os
@@ -975,6 +977,11 @@ class RetinaPainter(QtWidgets.QMainWindow):
         brush_menu.addAction(eraser_color_action)
         eraser_color_action.triggered.connect(self.set_eraser_color)
 
+        unsure_color_action = QtWidgets.QAction(QtGui.QIcon(""), "Unsure", self)
+        unsure_color_action.setShortcut("U")
+        brush_menu.addAction(unsure_color_action)
+        unsure_color_action.triggered.connect(self.set_unsure_color)
+
         ## View menu
         # Fit to view
         view_menu = menu_bar.addMenu('View')
@@ -1277,6 +1284,10 @@ class RetinaPainter(QtWidgets.QMainWindow):
 
     def set_eraser_color(self, _event):
         self.scene.brush_color = self.scene.eraser_color
+        self.update_cursor()
+
+    def set_unsure_color(self, _event):
+        self.scene.brush_color = self.scene.unsure_color
         self.update_cursor()
 
     def show_brush_size_edit(self):
