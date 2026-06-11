@@ -102,9 +102,10 @@ def create_first_model_with_random_weights(model_dir, model_type='unet'):
         print('RETFound-RFA model ready.', flush=True)
     elif model_type == 'fundusegmenter':
         from fundusegmenter_model import FunduSegmenter
-        print('Initialising FunduSegmenter model with local weights...', flush=True)
+        print('Initialising FunduSegmenter (PLACEHOLDER: plain U-Net with random '
+              'weights — no FunduSegmenter pretrained weights are loaded)...', flush=True)
         model = FunduSegmenter(num_classes=2)
-        print('FunduSegmenter model ready.', flush=True)
+        print('FunduSegmenter (U-Net placeholder) ready.', flush=True)
     else:
         model = UNetGNRes()
 
@@ -125,8 +126,12 @@ def get_prev_model(model_dir, model_type='unet'):
 
 def get_val_metrics(cnn, val_annot_dir, dataset_dir, in_w, out_w, bs):
     """
-    Return the TP, FP, TN, FN, defined_sum, duration
-    for the {cnn} on the validation set
+    Return validation metrics (TP/FP/TN/FN, F1, etc.) for {cnn} on the
+    validation set, plus a continuous validation ``loss`` = 1 - masked soft
+    Dice between the predicted foreground probability and the foreground label
+    over supervised pixels. Unlike hard F1 — which can sit at 0 for many epochs
+    while a rare-biomarker model is still learning — this loss changes smoothly
+    with progress, so Trainer.validation uses it as the early-stopping signal.
 
     TODO - This is too similar to the train loop. Merge both and use flags.
     """
@@ -143,6 +148,9 @@ def get_val_metrics(cnn, val_annot_dir, dataset_dir, in_w, out_w, bs):
     tns = 0
     fns = 0
     defined_sum = 0
+    # Continuous soft-Dice accumulators for a smooth validation loss.
+    soft_inter = 0.0   # sum of p * y over supervised pixels
+    soft_denom = 0.0   # sum of p + sum of y over supervised pixels
     for fname in fnames:
         annot_path = os.path.join(val_annot_dir,
                                   os.path.splitext(fname)[0] + '.png')
@@ -171,25 +179,35 @@ def get_val_metrics(cnn, val_annot_dir, dataset_dir, in_w, out_w, bs):
         image_path = glob.glob(image_path_part + '.*')[0]
         image = im_utils.load_image(image_path)
         image, pad_settings = im_utils.pad_to_min(image, min_w=in_w, min_h=in_w)
-        predicted = unet_segment(cnn, image, bs, in_w,
-                                 out_w, threshold=0.5)
-        predicted = im_utils.crop_from_pad_settings(predicted, pad_settings)
+        # threshold=None returns the foreground probability map (the input to
+        # the continuous soft-Dice validation loss computed below).
+        probs = unet_segment(cnn, image, bs, in_w,
+                                 out_w, threshold=None)
+        probs = im_utils.crop_from_pad_settings(probs, pad_settings)
 
         # mask defines which pixels are defined in the annotation.
         mask = foreground + background
         mask = mask.astype(bool).astype(int)
-        predicted *= mask
-        predicted = predicted.astype(bool).astype(int)
         y_defined = mask.reshape(-1)
-        y_pred = predicted.reshape(-1)[y_defined > 0]
+        probs_def = probs.reshape(-1)[y_defined > 0]
         y_true = foreground.reshape(-1)[y_defined > 0]
+        # hard predictions (threshold 0.5) for the F1-style counts
+        y_pred = (probs_def > 0.5).astype(int)
         tps += np.sum(np.logical_and(y_pred == 1, y_true == 1))
         tns += np.sum(np.logical_and(y_pred == 0, y_true == 0))
         fps += np.sum(np.logical_and(y_pred == 1, y_true == 0))
         fns += np.sum(np.logical_and(y_pred == 0, y_true == 1))
         defined_sum += np.sum(y_defined > 0)
+        # soft-Dice accumulation over supervised pixels (continuous)
+        soft_inter += float(np.sum(probs_def * y_true))
+        soft_denom += float(np.sum(probs_def) + np.sum(y_true))
     duration = round(time.time() - start, 3)
-    metrics = get_metrics(tps, fps, tns, fns, defined_sum, duration)
+    # Masked soft Dice → loss in [0, 1]. Undefined when there is no supervised
+    # foreground anywhere in val; report worst-case 1.0 in that case.
+    soft_dice = (2.0 * soft_inter / soft_denom) if soft_denom > 0 else 0.0
+    val_loss = 1.0 - soft_dice
+    metrics = get_metrics(tps, fps, tns, fns, defined_sum, duration,
+                          loss=val_loss)
     return metrics
 
 def save_if_better(model_dir, cur_model, prev_model_path,

@@ -1,0 +1,421 @@
+================================================================================
+RetinaPainter — "Funky things" code review
+================================================================================
+Date:      2026-06-11
+Scope:     trainer/src/* (training + segmentation pipeline) and the painter's
+           annotation-routing code. Focus on behaviours that are surprising,
+           inherited unexamined from RootPainter, or that specifically matter
+           for detecting SMALL retinal biomarkers (RIPL/SDD-scale lesions).
+Author:    Claude (code read-through, no code changed)
+
+How to read this:
+  Each item has a SEVERITY tag, the file:line, what it does, why it matters for
+  this project, and a concrete suggested fix. Not everything here is a bug —
+  several are defensible design choices that you should simply be AWARE of.
+
+Severity legend:
+  [BUG]        Incorrect behaviour or a latent crash.
+  [LEAK/STATS] Affects the integrity of the train/val signal or metrics.
+  [PERF]       Works correctly but wastes a lot of time/VRAM.
+  [DESIGN]     Intentional RootPainter behaviour; flagged so you can decide.
+  [RESEARCH]   Modelling choice worth revisiting for tiny-biomarker OCT.
+
+The two things you already noticed are items #1 (612 tiles) and #2 (not all
+images used). Both confirmed real; details below.
+
+================================================================================
+A. TRAINING-DATA SAMPLING / EPOCH DESIGN
+================================================================================
+
+--------------------------------------------------------------------------------
+#1  [DESIGN] The hard-coded "612 tiles per epoch"
+--------------------------------------------------------------------------------
+Where: trainer/src/datasets.py:99 and :111-112
+    def __init__(self, ..., min_epoch_tiles=612): ...
+    def __len__(self):
+        return max(self.min_epoch_tiles, len(ls(self.train_annot_dir)) * 2)
+
+What: An "epoch" is defined as max(612, 2 x number_of_train_annotations) tiles.
+Below 306 annotated training images, every epoch is exactly 612 tiles
+regardless of dataset size. The value 612 is an inherited RootPainter constant
+with no retina-specific justification, and it is NOT exposed on the CLI
+(unlike --patchsize, --maxbatchsize, --maxworkers).
+
+Why it matters: 612 sets your validation/early-stopping cadence (validation
+runs once per "epoch"). With RETFound, validation is very expensive (see #6),
+so 612 also indirectly controls how much GPU time you burn between checkpoints.
+It is currently un-tunable without editing source.
+
+Suggested fix:
+  - Add a --min-epoch-tiles CLI arg (main.py + src/__init__.py, keep them in
+    sync) and pass it into TrainDataset.
+  - Consider scaling it to the foreground budget rather than a flat 612, e.g.
+    enough tiles to cover the total annotated lesion area a few times over.
+
+--------------------------------------------------------------------------------
+#2  [DESIGN/STATS] "Not all annotated images are used in training" — confirmed
+--------------------------------------------------------------------------------
+Where: trainer/src/datasets.py:114 (__getitem__ ignores its index)
+       trainer/src/im_utils.py:71 (random.sample(fnames, 1))
+
+What: TrainDataset.__getitem__(self, _) ignores the DataLoader index entirely.
+Each call independently picks ONE random annotated file (uniform, WITH
+replacement) and crops one tile from it. So an epoch is "draw N random tiles",
+N = max(612, 2 x n_train). Two real consequences:
+
+  (a) Per-epoch coverage is incomplete once you have more than ~306 train
+      annotations. With N = 2n draws-with-replacement over n images, the
+      expected fraction of images that get ZERO tiles in a given epoch is
+      e^-2 ~= 13.5%. So at, say, 400 train images, ~54 of them are unseen in
+      any single epoch (coverage evens out only over many epochs).
+      (DataLoader shuffle=True is also meaningless here because the index is
+       ignored — worth deleting to avoid implying otherwise.)
+
+  (b) The validation split (the 1-in-6 routed to annotations/val/, see #4)
+      NEVER updates model weights at all — it is only used for model
+      selection. So if you annotate 120 images, ~20 of them never train the
+      network. That is correct ML practice, but combined with (a) it means
+      "the number of images that actually move the weights each epoch" is
+      noticeably smaller than "images I have annotated", which is probably the
+      effect you were sensing.
+
+Why it matters: For rare lesions, an image you painted a single hard SDD onto
+may be skipped for several consecutive epochs, while the early-stopping clock
+(60 epochs without progress, #6) keeps ticking. Uneven exposure + a wall-clock
+stopping rule can end training before a rare image has had much influence.
+
+Suggested fix (choose based on goals):
+  - Cheapest: raise min_epoch_tiles / make it proportional to n so 2n isn't the
+    binding term, guaranteeing higher per-epoch coverage.
+  - Better: make sampling cover every image at least once per epoch (shuffle a
+    file list and index into it) before falling back to random extra draws.
+  - This pairs naturally with #3.
+
+--------------------------------------------------------------------------------
+#3  [DESIGN/RESEARCH] Every image contributes the SAME number of tiles
+--------------------------------------------------------------------------------
+Where: trainer/src/datasets.py:131-135 (the existing TODO), and the uniform
+       random.sample in im_utils.py:71.
+
+What: An image with one tiny 10-px lesion and an image densely annotated with
+hundreds of lesion pixels are sampled with equal probability and yield, in
+expectation, the same number of training tiles. The original authors flagged
+this themselves:
+    # TODO: Images with less annotations will still give the same number of
+    # tiles ... Further empirical investigation ... required.
+
+Why it matters for you specifically: This is the opposite of what you usually
+want for tiny biomarkers. Lesion pixels are scarce; you generally want to
+oversample images/regions that actually contain lesions, not weight a
+nearly-empty correction the same as a richly-annotated scan.
+
+Suggested fix:
+  - Weight file selection by annotated-foreground pixel count (or by number of
+    connected lesion components) instead of uniform sampling.
+  - Or sample tiles centred on annotated foreground with some probability, and
+    random elsewhere, so small lesions are reliably seen.
+
+--------------------------------------------------------------------------------
+#4  [DESIGN/STATS] Count-based 5:1 train/val routing, no patient grouping
+--------------------------------------------------------------------------------
+Where: painter/src/main/python/file_utils.py:73-89 (get_new_annot_target_dir)
+
+What: New annotations are sent to train/ or val/ purely to maintain a 5:1
+file-count ratio, with no awareness of patient ID. (Already documented in
+CLAUDE.md.) For OCT, where the same patient's B-scans look almost identical,
+this scrambles any externally-prepared patient-level split and makes the
+val-F1 early-stopping signal over-optimistic (the network is effectively
+"validated" on near-duplicates of images it trained on).
+
+Why it matters: Your early-stopping decision and your "is the model improving?"
+read are both driven by this val-F1. If it leaks, you stop at the wrong time
+and over-trust the model.
+
+Status / fix: You already have the pre-populate-empty-PNGs and manual-move
+workarounds, plus the planned train-val-split branch (explicit source folders).
+Recommend prioritising that branch; it removes the whole failure mode. Until
+then, prefer the prepare_annotations.py pre-population approach over relying on
+the router.
+
+================================================================================
+B. VALIDATION / EARLY STOPPING
+================================================================================
+
+--------------------------------------------------------------------------------
+#5  [PERF] Previous checkpoint is re-loaded from disk EVERY validation epoch
+--------------------------------------------------------------------------------
+Where: trainer/src/trainer.py:461-464 (validation)
+       -> model_utils.py:121-124 get_prev_model -> load_model (reads the .pkl)
+
+What: Each epoch, validation() does:
+    prev_model, prev_path = get_prev_model(model_dir, ...)   # reads .pkl off disk
+    cur_metrics  = get_val_metrics(copy.deepcopy(self.model)) # deep-copies live model
+    prev_metrics = get_val_metrics(prev_model)
+So every single epoch it (a) reads the previous checkpoint from disk and
+rebuilds the architecture, and (b) deep-copies the in-memory model.
+
+Why it matters: For UNet this is cheap. For RETFound the checkpoint is large
+(~1.2 GB ViT-Large state dict) — re-reading and rebuilding it once per epoch is
+a big, completely avoidable per-epoch cost on top of the actual validation
+inference. It also means three large models can be resident at once
+(self.model + its deepcopy + prev_model), which is a VRAM risk on smaller GPUs.
+
+Suggested fix:
+  - Cache the "previous best" model object in memory (e.g. self.prev_model)
+    and only reload from disk when the best checkpoint actually changes.
+  - Evaluate prev_metrics once when a new best is saved and remember the score,
+    rather than recomputing the unchanged prev model every epoch.
+  - Free / move-to-CPU the deepcopy after validation to bound VRAM.
+
+--------------------------------------------------------------------------------
+#6  [BUG-ish/STATS] F1 is NaN when there are no true positives, and the
+    early-stopping clock keeps ticking through those epochs
+--------------------------------------------------------------------------------
+Where: trainer/src/metrics.py:47-53 (f1 = NaN when tp == 0)
+       trainer/src/trainer.py:467-487 (save_if_better + 60-epoch stop)
+       trainer/src/trainer.py:132 (max_epochs_without_progress = 60)
+
+What: When the model predicts no foreground on the val set (very common in
+early training for rare lesions), tp == 0 so precision/recall/f1 are NaN.
+save_if_better compares `cur_f1 > prev_f1`; any comparison with NaN is False,
+so nothing is saved and epochs_without_progress increments. After 60 such
+epochs training auto-stops ("epochs without progress").
+
+Why it matters: A genuinely hard tiny-biomarker model that takes a while before
+it fires its first true positive can hit the 60-epoch limit and stop BEFORE it
+ever started learning to detect the lesion — and the logs will show a column of
+NaN F1s rather than an obvious error.
+
+Suggested fix:
+  - Treat NaN F1 explicitly (e.g. as 0.0, or fall back to IoU/recall) so "no
+    detections yet" is distinguishable from "no progress".
+  - Consider a soft criterion (val loss, or Dice on probabilities) for early
+    epochs where hard F1 is degenerate.
+  - Make max_epochs_without_progress configurable; 60 is an inherited constant.
+
+--------------------------------------------------------------------------------
+#7  [STATS] Validation never computes a loss value (logged as NaN)
+--------------------------------------------------------------------------------
+Where: model_utils.py:192 calls get_metrics(...) without the loss arg, so the
+       val CSVs always record loss = NaN.
+
+Why it matters: You can't plot a val-loss curve to sanity-check overfitting;
+you only get val-F1 (which is degenerate early, per #6). Low severity but it
+removes a useful diagnostic.
+
+Suggested fix: compute the masked combined/Tversky loss over val tiles and pass
+it to get_metrics so the val CSV has a real loss column.
+
+--------------------------------------------------------------------------------
+#8  [BUG] Division-by-zero if a validation tile has zero defined pixels
+--------------------------------------------------------------------------------
+Where: trainer/src/metrics.py:41
+    total = (tp + tn + fp + fn)
+    accuracy = (tp + tn) / total          # no guard against total == 0
+
+What: If a val annotation PNG has no defined (fg or bg) pixels, defined_sum and
+total are 0 and accuracy raises ZeroDivisionError, taking down the validation
+pass. An all-empty or accidentally-blank val PNG is enough to trigger it.
+
+Suggested fix: guard `total == 0` and return zeros / skip the file.
+
+================================================================================
+C. LATENT CORRECTNESS BUGS
+================================================================================
+
+--------------------------------------------------------------------------------
+#9  [BUG] The "any photos in this folder?" guard doesn't actually check for
+    photos
+--------------------------------------------------------------------------------
+Where: trainer/src/trainer.py:339-342
+    if not [is_photo(a) for a in ls(train_annot_dir)]:
+        return
+    if not [is_photo(a) for a in ls(val_annot_dir)]:
+        return
+
+What: `[is_photo(a) for a in ls(dir)]` is a list of booleans. `not <list>` is
+True only when the list is EMPTY. A directory containing only non-photo files
+(say a stray .txt or .json) produces `[False]`, which is truthy, so the guard
+does NOT fire and training proceeds as if photos exist. The is_photo() call is
+dead code here. The intended check is almost certainly `any(...)`.
+
+Why it matters: Mostly latent (annotation dirs usually hold PNGs only), but if
+a non-image file lands in train/ or val/ the guard silently misbehaves instead
+of cleanly skipping.
+
+Suggested fix:
+    if not any(is_photo(a) for a in ls(train_annot_dir)):
+        return
+(same for val).
+
+--------------------------------------------------------------------------------
+#10 [BUG/STATS] NumPy-based augmentations are not re-seeded per DataLoader
+    worker (classic PyTorch+NumPy duplication footgun)
+--------------------------------------------------------------------------------
+Where: trainer/src/trainer.py:352-359 (DataLoader has no worker_init_fn / no
+       generator) and the np.random-based augmentations:
+       im_utils.add_gaussian_noise (np.random.normal),
+       im_utils.add_salt_pepper (np.random.rand).
+
+What: PyTorch auto-seeds Python's `random` and torch per worker, but NOT NumPy.
+With num_workers > 1 (default up to 12), every worker inherits the same NumPy
+RNG state, so the Gaussian-noise and salt-pepper augmentations draw IDENTICAL
+noise patterns across workers within an epoch. This is the well-known
+"using NumPy inside a Dataset" bug. (Elastic and flip use Python `random`, so
+they're fine.)
+
+Why it matters: It quietly reduces augmentation diversity — workers produce
+correlated noise — which weakens regularisation. Subtle, never crashes, easy to
+miss.
+
+Suggested fix: pass a worker_init_fn to the DataLoader that seeds NumPy from
+torch.initial_seed():
+    def _seed_worker(worker_id):
+        import numpy as np, random, torch
+        s = torch.initial_seed() % 2**32
+        np.random.seed(s); random.seed(s)
+    DataLoader(..., worker_init_fn=_seed_worker)
+
+================================================================================
+D. NORMALIZATION / PREPROCESSING (research concerns for OCT)
+================================================================================
+
+--------------------------------------------------------------------------------
+#11 [RESEARCH] Per-tile min-max contrast stretch discards absolute OCT
+    intensity and can amplify background noise
+--------------------------------------------------------------------------------
+Where: trainer/src/im_utils.py:43-48 (normalize_tile = rescale_intensity to
+       [0,1] using THIS tile's own min/max), applied in datasets.py:154 and
+       again at :156 (before and after augmentation), and in unet_segment at
+       inference so train/inference are at least consistent.
+
+What: Each tile is independently rescaled so its own min->0 and max->1. Two
+issues for OCT:
+  (a) Absolute reflectivity is destroyed — a low-signal region and a bright
+      region get mapped to the same [0,1] range. For OCT, absolute intensity
+      can be diagnostically meaningful.
+  (b) A near-uniform background tile (tiny min-max gap) gets its faint noise
+      stretched to full contrast, which can manufacture spurious structure
+      exactly in the empty regions where false positives hurt.
+
+Why it matters: For subtle biomarkers this normalization choice is doing real
+work on your inputs and was inherited from a root-imaging tool, not chosen for
+OCT. Worth an ablation: dataset-level (fixed) normalization vs per-tile.
+
+Suggested fix: try a fixed normalization (e.g. divide by a dataset-wide
+intensity range, or standardize to dataset mean/std) and compare. Note: for
+RETFound the tile is per-tile-stretched and THEN ImageNet-normalized inside
+forward(); that double transform is also worth questioning (see #12).
+
+--------------------------------------------------------------------------------
+#12 [RESEARCH] Grayscale OCT is triplicated to RGB then ImageNet-normalized
+--------------------------------------------------------------------------------
+Where: im_utils.load_image:266-269 (gray2rgb) and
+       retfound_model.py:147-165 (per-channel ImageNet mean/std).
+
+What: OCT B-scans are single-channel; load_image triplicates gray into 3
+identical channels, then RETFound applies distinct per-channel ImageNet
+mean/std (0.485/0.456/0.406, ...). The three "colour" channels are identical,
+so the per-channel stats just apply three slightly different affine shifts to
+the same data. RETFound-OCT was pretrained on OCT, so the ImageNet stats may
+not even be the right normalization for the pretrained encoder.
+
+Why it matters: Probably minor, but it's an unexamined assumption in the
+RETFound path. Worth confirming what normalization the RETFound-OCT checkpoint
+actually expects (ImageNet stats vs OCT-specific stats).
+
+Suggested fix: verify against the RETFound-OCT reference preprocessing; if it
+expects different stats, fix _MEAN/_STD in retfound_model.py.
+
+================================================================================
+E. CORRECTIVE-ANNOTATION PARADIGM IMPLICATIONS
+================================================================================
+
+--------------------------------------------------------------------------------
+#13 [DESIGN/RESEARCH] The model rarely sees "pure background far from any
+    annotation"
+--------------------------------------------------------------------------------
+Where: trainer/src/datasets.py:136-142
+    while True:
+        ... pick a random crop ...
+        if np.sum(annot_tile) > 0:   # tile must contain SOME fg or bg
+            break
+
+What: Training tiles are rejection-sampled until they contain at least one
+annotated (fg or bg) pixel; and the masked loss (correctly) only supervises
+annotated pixels. So the network is trained almost entirely on neighbourhoods
+of things you painted. Background that you never clicked near is essentially
+never used as a negative.
+
+Why it matters: This is the intended RootPainter corrective loop, and your
+sparse-supervision policy is deliberate (CLAUDE.md). But for biomarker
+detection it biases toward false positives in regions of the scan you never
+annotated, because the model has little signal that "this faraway texture is
+NOT a lesion". Something to watch when you see FPs in un-annotated areas.
+
+Also note a robustness edge: the `while True` loop has NO max-attempts guard
+(unlike load_train_image_and_annot at im_utils.py:57, which caps at 60). If an
+annotation file ever ends up with a non-zero sum that is effectively impossible
+to hit with a random in_w crop (e.g. a 1-px annotation in a huge image, or a
+malformed file), this loops a long time. Low probability, but it's an unbounded
+loop in the hot path.
+
+Suggested fix:
+  - Add a max-attempts cap to the tile loop and fall back to a tile centred on a
+    known annotated pixel.
+  - Separately, consider deliberately mixing in a small fraction of
+    annotation-free "hard negative" tiles to suppress background false
+    positives (this is a policy change — evaluate it, per the CLAUDE.md note on
+    not changing supervision semantics implicitly).
+
+================================================================================
+F. SMALLER / COSMETIC
+================================================================================
+
+#14 [DESIGN] --patchsize is accepted but ignored for retfound/retfound_rfa
+    (in_w/out_w are forced to 224 in trainer.py:89-92). Only validated for
+    unet. Harmless, but a user passing --patchsize with a RETFound model gets
+    silently ignored. Consider warning when --patchsize is set but unused.
+
+#15 [DESIGN] reconstruct_from_tiles (im_utils.py:202-206) writes tiles into the
+    output with last-write-wins on the overlapping right/bottom edge tiles
+    (no blending/averaging). Can leave faint seams at the right/bottom borders
+    of segmentations. Minor; only affects edge pixels.
+
+#16 [DOC] CLAUDE.md's "Running" section refers to ~/root_painter_settings.json
+    and ~/root_painter_sync, but the code actually uses
+    'retina_painter_settings.json' (trainer.py:72, painter main.py:39). The
+    code is self-consistent; the docs are stale. Fix the docs so a user setting
+    up the sync dir by hand doesn't look for the wrong file.
+
+#17 [PERF] copy.deepcopy(self.model) every validation epoch (trainer.py:463) is
+    wasteful for RETFound-sized models even setting aside #5. If you only need
+    metrics, you can run validation on self.model directly with torch.no_grad()
+    + model.eval() and skip the copy (the copy exists to avoid disturbing the
+    training model's mode/state — achievable more cheaply by saving/restoring
+    train() mode).
+
+================================================================================
+SUGGESTED PRIORITISATION
+================================================================================
+Fix first (cheap, clear correctness / signal integrity):
+   #9  any() guard bug
+   #8  val divide-by-zero guard
+   #6  NaN-F1 vs early stopping (you may be stopping good runs early)
+   #10 worker_init_fn for NumPy augmentation
+
+High value for RETFound runtime:
+   #5  cache prev model instead of reloading each epoch
+   #17 drop/replace the per-epoch deepcopy
+
+Research / decide deliberately (don't silently change):
+   #2/#3 sampling coverage + per-image weighting
+   #4   patient-level split (the train-val-split branch)
+   #11/#12 OCT normalization choices
+   #13  background false-positive exposure
+
+Quality-of-life:
+   #1  expose --min-epoch-tiles
+   #14 warn on ignored --patchsize
+   #16 doc fix
+================================================================================

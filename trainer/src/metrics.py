@@ -39,7 +39,7 @@ def get_metric_csv_row(metrics):
 
 def get_metrics(tp, fp, tn, fn, defined_sum, duration, loss=float('nan')):
     total = (tp + tn + fp + fn)
-    accuracy = (tp + tn) / total
+    accuracy = (tp + tn) / total if total > 0 else float('nan')
     assert not np.isnan(tp)
     assert not np.isnan(fp)
     assert not np.isnan(fn)
@@ -50,7 +50,12 @@ def get_metrics(tp, fp, tn, fn, defined_sum, duration, loss=float('nan')):
         f1 = 2 * ((precision * recall) / (precision + recall))
         iou = tp / (tp + fp + fn)
     else:
-        precision = recall = f1 = iou = float('NaN')
+        # No true positives: precision/recall/F1/IoU are conventionally 0
+        # (sklearn's zero_division=0). Returning 0.0 instead of NaN keeps
+        # model-selection and early-stopping comparisons well-defined — a model
+        # that "predicts nothing yet" stays distinguishable from one that has
+        # genuinely stopped improving.
+        precision = recall = f1 = iou = 0.0
     return {
         "accuracy": accuracy,
         "TN": tn,
@@ -61,8 +66,8 @@ def get_metrics(tp, fp, tn, fn, defined_sum, duration, loss=float('nan')):
         "recall": recall,
         "f1": f1,
         "iou": iou,
-        "true_mean": (tp + fn) / total,
-        "pred_mean": (tp + fp) / total,
+        "true_mean": (tp + fn) / total if total > 0 else float('nan'),
+        "pred_mean": (tp + fp) / total if total > 0 else float('nan'),
         "defined": defined_sum,
         "duration": duration,
         "loss": loss,

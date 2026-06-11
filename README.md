@@ -14,7 +14,7 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 - **Foundation model backbone** — The U-Net is replaced with RETFound ViT-Large, a Vision Transformer pre-trained via masked autoencoder self-supervision on 1.6M unlabeled retinal images. Two segmentation heads are available, selected from a dropdown in the **New Project** dialog:
   - **U-Net (original RootPainter)** — scratch-trained U-Net with Group Normalization, unchanged from RootPainter.
-  - **RETFound + plain decoder** — plain 4-stage transposed-convolution decoder on top of the frozen ViT encoder.
+  - **RETFound + plain decoder** — plain 4-stage transposed-convolution decoder on top of the RETFound ViT encoder (the encoder is fine-tuned, not frozen). Trained with the same FN-weighted Tversky loss as the RFA decoder, using SGD.
   - **RETFound + RFA-U-Net (recommended)** — **RFA-U-Net decoder**: uses four intermediate ViT feature maps (Z6, Z12, Z18, Z24) as U-Net-style skip connections, each passed through a progressive upsampling pyramid and fused via additive attention gates. Achieves Dice 95.04% / Jaccard 90.59% on choroid segmentation vs. all CNN and SOTA baselines (Hayati et al., 2025). Uses Tversky loss (α=0.7, β=0.3) and freezes the first 21 of 24 encoder blocks, training only the last 3 blocks + decoder with AdamW.
 
 - **Parameter-efficient fine-tuning (planned)** — LoRA adapter layers will be injected into the ViT encoder so that each interactive training step updates only a small fraction of parameters, enabling near-real-time model updates on a desktop GPU.
@@ -129,6 +129,8 @@ start-trainer --syncdir /path/to/sync_dir
 
 The `--model-type` CLI arg still exists as a server-side default (useful when the trainer is started independently and the painter has not yet sent a project instruction), but it is not normally needed.
 
+**Early stopping:** training stops automatically after a number of validation epochs with no improvement in the (continuous) validation loss. The default patience is 60 epochs; raise it for hard, slow-to-converge biomarkers with `--max-epochs-without-progress N` (e.g. `--max-epochs-without-progress 120`). Model *selection* uses validation F1 — the best-F1 checkpoint is the one used for segmentation.
+
 **`retfound_rfa` vs `retfound`:** Both use the same encoder weights and 224×224 tiles. `retfound_rfa` adds a U-Net decoder with skip connections from four intermediate ViT layers and attention gates, uses Tversky loss, and trains with AdamW. It achieves better boundary precision at the cost of slightly higher memory.
 
 **First-run note:** Loading the RETFound checkpoint (~3.95 GB) takes 2–5 minutes on both backends. Progress prints appear in the terminal. The first segmentation after startup also loads the model from disk, so expect a similar wait before the first overlay appears.
@@ -156,11 +158,14 @@ python -m pytest test_retfound.py -v
 # RFA-U-Net decoder + Tversky loss tests (no weight download needed)
 python -m pytest test_retfound_rfa.py -v
 
+# FunduSegmenter placeholder + metrics tests
+python -m pytest test_fundusegmenter.py test_metrics.py -v
+
 # Existing unit tests (loss, unet, utilities)
 python -m pytest test_loss.py test_unet.py test_utils.py -v
 ```
 
-`test_retfound_rfa.py` (15 tests) covers:
+`test_retfound_rfa.py` (18 tests) covers:
 - `forward_multi_features` returns 4 skip tensors of shape `(B, 196, 1024)`
 - `RETFoundSegRFA` forward pass: `(B, 3, 224, 224)` → `(B, 2, 224, 224)`
 - Softmax sums to 1, no NaNs, gradients flow to decoder

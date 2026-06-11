@@ -62,12 +62,19 @@ def main() -> None:
             "or 'fundusegmenter' (local FunduSegmenter adapter)"
         ),
     )
+    parser.add_argument(
+        "--max-epochs-without-progress",
+        type=int,
+        default=60,
+        help="stop training after this many validation epochs with no improvement in validation loss",
+    )
 
     args = parser.parse_args()
     trainer = Trainer(sync_dir=args.syncdir, patch_size=args.patchsize,
                       max_workers=args.maxworkers,
                       max_batch_size=args.maxbatchsize,
-                      model_type=args.model_type)
+                      model_type=args.model_type,
+                      max_epochs_without_progress=args.max_epochs_without_progress)
     trainer.main_loop()
 
 if __name__ == "__main__":

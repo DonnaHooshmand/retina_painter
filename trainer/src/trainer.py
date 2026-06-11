@@ -30,6 +30,7 @@ import copy
 import traceback
 import multiprocessing
 import shutil
+import random
 
 import numpy as np
 import torch
@@ -49,12 +50,28 @@ from file_utils import ls
 from startup import startup_setup, ensure_required_folders_exist
 from unet import get_valid_patch_sizes
 
+
+def _seed_worker(_worker_id):
+    """Re-seed NumPy and Python's `random` for each DataLoader worker.
+
+    PyTorch reseeds torch and Python's `random` per worker automatically, but
+    NOT NumPy. Without this, the np.random-based augmentations (Gaussian noise,
+    salt-and-pepper) draw identical noise in every worker. Deriving the seed
+    from torch.initial_seed() keeps workers decorrelated within an epoch and
+    across epochs. See https://pytorch.org/docs/stable/notes/randomness.html
+    """
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
 class Trainer():
 
     def __init__(self, sync_dir=None, patch_size=572,
                  max_workers=12,
                  max_batch_size=12,
                  model_type='unet',
+                 max_epochs_without_progress=60,
                  ):
 
         self.model_type = model_type
@@ -128,8 +145,15 @@ class Trainer():
         self.annot_mtimes = []
         self.msg_dir = None
         self.epochs_without_progress = 0
-        # approx 30 minutes
-        self.max_epochs_without_progress = 60
+        # Early stopping is driven by the continuous validation loss (see
+        # validation()): stop after this many epochs with no val-loss
+        # improvement. ~30 min at default cadence; configurable via
+        # --max-epochs-without-progress.
+        self.max_epochs_without_progress = max_epochs_without_progress
+        # Best (lowest) validation loss seen this run, plus the smallest
+        # improvement that counts as progress (guards against val noise).
+        self.best_val_loss = float('inf')
+        self.min_val_loss_delta = 1e-4
         # These can be trigged by data sent from client
         self.valid_instructions = [self.start_training,
                                    self.segment,
@@ -257,6 +281,7 @@ class Trainer():
         if self.training:
             self.training = False
             self.epochs_without_progress = 0
+            self.best_val_loss = float('inf')
             message = 'Training stopped'
             self.write_message(message)
             self.log(message)
@@ -284,6 +309,7 @@ class Trainer():
                 self.apply_model_type(config['model_type'])
             self.train_config = config
             self.epochs_without_progress = 0
+            self.best_val_loss = float('inf')
             self.msg_dir = self.train_config['message_dir']
             model_dir = self.train_config['model_dir']
             self.train_set = TrainDataset(self.train_config['train_annot_dir'],
@@ -327,6 +353,8 @@ class Trainer():
         if new_annot_mtimes != self.annot_mtimes:
             print('reset epochs without progress as annotations have changed')
             self.epochs_without_progress = 0
+            # The val set changed, so the previous best val loss is stale.
+            self.best_val_loss = float('inf')
         self.annot_mtimes = new_annot_mtimes
 
     def write_message(self, message):
@@ -336,9 +364,9 @@ class Trainer():
     def train_one_epoch(self):
         train_annot_dir = self.train_config['train_annot_dir']
         val_annot_dir = self.train_config['val_annot_dir']
-        if not [is_photo(a) for a in ls(train_annot_dir)]:
+        if not any(is_photo(a) for a in ls(train_annot_dir)):
             return
-        if not [is_photo(a) for a in ls(val_annot_dir)]:
+        if not any(is_photo(a) for a in ls(val_annot_dir)):
             return
 
 
@@ -356,6 +384,7 @@ class Trainer():
                                   # don't go above max_workers (user specified but default 12) 
                                   # and don't go above the number of cpus, provided by cpu_count.
                                   num_workers=self.num_workers,
+                                  worker_init_fn=_seed_worker,
                                   drop_last=False, pin_memory=True)
         epoch_start = time.time()
         self.model.train()
@@ -384,7 +413,10 @@ class Trainer():
             # `outputs[:, c] *= defined_tiles` trick did not actually
             # ignore them — softmax(0,0) = (0.5, 0.5) still incurred a
             # constant ~log(2) CE penalty per untouched pixel.)
-            if self.model_type == 'retfound_rfa':
+            # retfound and retfound_rfa use FN-weighted Tversky (alpha=0.7,
+            # beta=0.3, class_weights=(1.0, 2.0)) for better recall on small,
+            # rare biomarkers. unet / fundusegmenter keep Dice + 0.3 CE.
+            if self.model_type in ('retfound', 'retfound_rfa'):
                 loss = tversky_loss(outputs, foreground_tiles.long(),
                                     mask=defined_tiles)
             else:
@@ -445,11 +477,16 @@ class Trainer():
             log_file.flush()
 
     def validation(self):
-        """ Get validation set metrics for current model and previous model.
-             log those metrics and update the model if the
-             current model is better than the previous model.
-             Also stop training if the current model hasnt
-             beat the previous model for {max_epochs}
+        """ Get validation-set metrics for the current and previous model,
+             log them, and save the current model if it has the better
+             validation F1 (model selection stays F1-based).
+
+             Early stopping, however, is driven by the continuous validation
+             loss (masked soft Dice), not F1: on rare biomarkers F1 can sit at
+             0 for many epochs while the model is still learning, so stopping on
+             F1 would end training before the first true positive appears.
+             Training stops after max_epochs_without_progress epochs with no
+             val-loss improvement.
         """
         model_dir = self.train_config['model_dir']
         # TODO consider implementing checkpointer class to maintain
@@ -464,9 +501,14 @@ class Trainer():
         prev_metrics = get_val_metrics(prev_model)
         self.log_metrics('cur_val', cur_metrics)
         self.log_metrics('prev_val', prev_metrics)
-        was_saved = save_if_better(model_dir, self.model, prev_path,
-                                   cur_metrics['f1'], prev_metrics['f1'])
-        if was_saved:
+        save_if_better(model_dir, self.model, prev_path,
+                       cur_metrics['f1'], prev_metrics['f1'])
+        # Model selection stays F1-based (save_if_better above). Early stopping
+        # is driven by the continuous validation loss so we don't terminate
+        # during the early phase where F1 is still 0 but the model is learning.
+        cur_val_loss = cur_metrics['loss']
+        if cur_val_loss < self.best_val_loss - self.min_val_loss_delta:
+            self.best_val_loss = cur_val_loss
             self.epochs_without_progress = 0
         else:
             self.epochs_without_progress += 1

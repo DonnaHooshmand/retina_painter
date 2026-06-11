@@ -41,7 +41,7 @@ Defined across two files:
 - **`retfound_vit.py`** — `RETFoundViT`: ViT-Large (patch_size=16, embed_dim=1024, depth=24, num_heads=16) with sin-cos positional embeddings. `forward_features(x)` returns `(B, 196, 1024)` patch tokens (cls token dropped). Also exposes `forward_multi_features(x, indices)` which captures intermediate block outputs for RFA skip connections. Weights match the RETFound checkpoint format exactly.
 - **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`iszt/RETFound_mae_natureOCT`) on first use, caching to `~/.cache/retina_painter/`. **This repo is gated — users must request access at https://huggingface.co/iszt/RETFound_mae_natureOCT and authenticate via `huggingface_hub.login()` before the automatic download will work. In practice, use `setup_retfound.py` which downloads from Google Drive instead.**
 
-**Loss** (`loss.py`): Combined 0.7 Dice + 0.3 Cross-Entropy.
+**Loss** (`loss.py`): `tversky_loss(predictions, labels, alpha=0.7, beta=0.3, class_weights=(1.0, 2.0))` — the same FN-weighted Tversky as `retfound_rfa`, chosen for better recall on small, rare biomarkers. (Note: the optimizer for `retfound` remains SGD, unlike `retfound_rfa`'s AdamW.)
 
 ### RETFound + RFA-U-Net decoder (`--model-type retfound_rfa`)
 
@@ -74,6 +74,17 @@ Each skip connection passes through an `_AttentionGate` (additive attention: Wg 
 - Loading the checkpoint takes 2–5 minutes on each trainer startup — this is expected due to the file size
 
 **Key difference from retfound:** For both, `in_w = out_w = 224` (no valid-convolution crop). `retfound_rfa` consumes more VRAM due to storing 4 intermediate feature maps; the per-item memory estimate (1.5 GB) is the same conservative value used for plain `retfound`.
+
+## Validation & Early Stopping
+
+Each epoch, `Trainer.validation()` ([trainer.py](trainer/src/trainer.py)) evaluates the current model on `annotations/val/` and decides both *which* checkpoint to keep and *when* to stop.
+
+- **Model selection is F1-based.** `save_if_better` writes a new checkpoint only when the current model's validation **F1** beats the previous best. The model used for segmentation is always the best-F1 checkpoint.
+- **Early stopping is driven by a continuous validation loss, not F1.** `get_val_metrics` ([model_utils.py](trainer/src/model_utils.py)) computes `loss = 1 - (masked soft Dice)` between the predicted foreground probability and the label over supervised pixels. The "epochs without progress" counter resets when this val loss reaches a new minimum (by at least `min_val_loss_delta = 1e-4`) and increments otherwise. Training stops after `max_epochs_without_progress` epochs with no val-loss improvement.
+- **Why not stop on F1?** On rare biomarkers, hard F1 can sit at 0 for many epochs while the model is still genuinely learning (val loss falling). Gating early stopping on F1 — as the original RootPainter code did — could end training before the first true positive ever appears. Relatedly, `get_metrics` now returns 0.0 (not NaN) when there are no true positives, so all comparisons stay well-defined.
+- **Configurable patience:** `--max-epochs-without-progress` (default 60) on `main.py` / `start-trainer`. The counter and `best_val_loss` also reset whenever annotations change.
+
+This logic governs only the *internal* validation signal; the held-out test set is a separate physical folder (see Architecture) and is unaffected.
 
 ## Model Factory Pattern
 
@@ -143,16 +154,19 @@ cd painter/src/main/python && python main.py
 
 Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
+**Early-stopping patience:** `--max-epochs-without-progress N` (default 60) controls how many validation epochs with no validation-loss improvement trigger an automatic stop. Raise it for hard, slow-to-converge tiny-biomarker tasks, e.g. `python -u main.py --syncdir ~/root_painter_sync --model-type retfound --max-epochs-without-progress 120`.
+
 ## Testing
 
-Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 44 tests; takes ~80s on CPU.
+Tests are in `trainer/tests/`. Run from that directory. Full unit suite is ~53 tests; takes ~90s on CPU.
 
 ```bash
 cd trainer/tests
 
 # Full unit suite (fast, no downloads)
-python -m pytest test_loss.py test_unet.py test_utils.py test_loss_masking.py \
-                  test_retfound.py test_retfound_rfa.py -v
+# (test_utils.py is a shared helper module, not a test file)
+python -m pytest test_loss.py test_unet.py test_metrics.py test_loss_masking.py \
+                  test_retfound.py test_retfound_rfa.py test_fundusegmenter.py -v
 
 # Individual files
 python -m pytest test_retfound.py -v          # RETFound plain decoder
@@ -170,6 +184,8 @@ python -m pytest test_training.py -v -s
 - `test_retfound.py` (12 tests) — ViT token shape, `RETFoundSeg` forward pass shape, softmax correctness, gradient flow through decoder, and a tiling smoke test.
 - `test_retfound_rfa.py` (18 tests) — `forward_multi_features` shape, `RETFoundSegRFA` forward pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing, Tversky loss properties, and a tiling smoke test.
 - `test_loss_masking.py` (9 tests, Phase 1) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both `combined_loss` and `tversky_loss`; parity with legacy unmasked loss when mask is all-1s; documents the legacy `outputs *= mask` leak so it cannot be re-introduced.
+- `test_fundusegmenter.py` (4 tests) — FunduSegmenter import, forward-pass shape (572→500, identical to UNet), no-NaN output, and `_build_model('fundusegmenter')` routing. (FunduSegmenter is currently a UNet placeholder — see Models.)
+- `test_metrics.py` (5 tests) — `get_metrics` returns 0.0 (not NaN) when there are no true positives, does not divide by zero when no pixels are defined, and passes the validation loss through.
 
 **End-to-end smoke scripts** (not collected by pytest, run manually):
 - `smoke_phase1.py` — UNet integration: 30-step training run, legacy-vs-fixed loss comparison across untouched-fraction settings, gradient isolation. Runs in ~30s on CPU.
@@ -229,6 +245,19 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 - When `in_w == out_w` (RETFound), `tile_pad = 0`. Guard any annotation crop with `if tile_pad > 0:` — Python's `x[0:-0]` is `x[0:0]` (empty), not a no-op.
 
 ## Current Development Status
+
+### Maintenance & correctness fixes (2026-06-11)
+
+A review pass over the model/loss/training code produced these fixes (all model/loss/metrics unit suites green — 53 tests):
+
+- **`retfound` now trains with Tversky loss** (the same FN-weighted `tversky_loss` as `retfound_rfa`), for better recall on small, rare biomarkers. `unet`/`fundusegmenter` keep `combined_loss` (Dice + 0.3·CE). `retfound`'s optimizer stays SGD (only `retfound_rfa` uses AdamW). Loss routing in `trainer.py`: `if self.model_type in ('retfound', 'retfound_rfa')`.
+- **Early stopping reworked** — model selection stays F1-based, but the *stop* signal is now a continuous validation loss (`1 - masked soft Dice`) instead of "F1 didn't improve". Prevents premature stops on rare lesions where F1 sits at 0 during warmup. See **Validation & Early Stopping**. New `--max-epochs-without-progress` CLI flag (default 60) on `main.py` + `src/__init__.py`.
+- **`get_metrics` returns 0.0 (not NaN) when there are no true positives**, and guards every `/ total` division against `total == 0` (no more crash on an empty val tile). `metrics.py`.
+- **`train_one_epoch` photo guard fixed** — `if not [is_photo(a) for a in ls(d)]` (truthy unless the dir is empty) → `if not any(is_photo(a) ...)`. `trainer.py`.
+- **DataLoader workers re-seed NumPy** via `worker_init_fn=_seed_worker`, so `np.random`-based augmentations (Gaussian noise, salt-and-pepper) are no longer duplicated across workers. `trainer.py`.
+- **FunduSegmenter is honestly labelled a placeholder** — `fundusegmenter_model.py` is a plain `UNetGNRes` wrapper (no FunduSegmenter architecture or weights); `--model-type fundusegmenter` ≡ `--model-type unet`. It now emits a `warnings.warn` on construction, and the misleading "Initialising … with local weights" log was corrected (there are no weights).
+- **RETFound download docs corrected** — `download_retfound_weights` docstring/error now state the truth: the gated `iszt/RETFound_mae_natureOCT` repo ships `model.safetensors` (not `RETFound_oct.pth`), so the automatic HF download usually fails; use `setup_retfound.py` (Google Drive).
+- **New `test_metrics.py`** locks in the metrics behaviour.
 
 ### Phase 1a: RETFound Backbone — COMPLETE
 

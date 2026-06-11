@@ -7,15 +7,23 @@ The decoder is a lightweight 4-stage convolutional upsampler that maps the
 
 Weight download
 ---------------
-RETFound weights are hosted on HuggingFace Hub.  Call
-``download_retfound_weights()`` to fetch them on first use; they are cached
-under ``~/.cache/retina_painter/``.
+``download_retfound_weights()`` returns a local path to the checkpoint,
+caching it at ``~/.cache/retina_painter/RETFound_oct.pth``.
 
-If the HuggingFace Hub is unavailable (e.g. air-gapped compute), place the
-checkpoint at the cache path manually and the function will skip the download.
+Recommended path (the one that actually works for most users): run
+``setup_retfound.py`` once. It downloads ``RETFound_oct.pth`` from Google
+Drive and writes it to the cache path above; this loader then finds it and
+skips any network access.
 
-Expected HuggingFace repository : ``rmaphoh/RETFound-MAE``
-Expected filename                : ``RETFound_oct.pth``
+Automatic HuggingFace fallback (best-effort only): if the checkpoint is not
+already cached, the function attempts ``hf_hub_download`` from the gated repo
+``iszt/RETFound_mae_natureOCT``. Note that repo (a) is access-gated — you must
+request access and call ``huggingface_hub.login()`` first — and (b) ships its
+weights as ``model.safetensors``, not ``RETFound_oct.pth``, so the automatic
+``.pth`` download will usually fail. Prefer ``setup_retfound.py``.
+
+If the Hub is unavailable (e.g. air-gapped compute), place
+``RETFound_oct.pth`` at the cache path manually and the download is skipped.
 """
 
 from pathlib import Path
@@ -77,9 +85,13 @@ def download_retfound_weights(cache_dir: Path = None) -> Path:
     except Exception as exc:
         raise RuntimeError(
             f"Could not download RETFound weights automatically: {exc}\n"
-            f"Please download '{RETFOUND_OCT_FILENAME}' manually from\n"
+            f"The gated repo '{RETFOUND_HF_REPO}' ships 'model.safetensors', not "
+            f"'{RETFOUND_OCT_FILENAME}', so the automatic download often fails.\n"
+            f"Recommended fix: run setup_retfound.py to fetch "
+            f"'{RETFOUND_OCT_FILENAME}' from Google Drive.\n"
+            f"Alternatively, download it manually from\n"
             f"  {_MANUAL_DOWNLOAD_URL}\n"
-            f"and place it at:\n"
+            f"(request access + huggingface_hub.login() first) and place it at:\n"
             f"  {local_path}"
         ) from exc
 

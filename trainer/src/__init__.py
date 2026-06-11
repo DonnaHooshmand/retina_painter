@@ -43,6 +43,11 @@ parser.add_argument('--model-type',
                         "'retfound_rfa' (RETFound + RFA-U-Net attention decoder), "
                         "or 'fundusegmenter' (local FunduSegmenter adapter)"
                     ))
+parser.add_argument('--max-epochs-without-progress',
+                    type=int,
+                    default=60,
+                    help=('stop training after this many validation epochs'
+                          ' with no improvement in validation loss'))
 
 def start():
     from trainer import Trainer
@@ -50,8 +55,10 @@ def start():
     if args.syncdir:
         trainer = Trainer(sync_dir=args.syncdir,
                           max_batch_size=args.maxbatchsize,
-                          model_type=args.model_type)
+                          model_type=args.model_type,
+                          max_epochs_without_progress=args.max_epochs_without_progress)
     else:
         trainer = Trainer(max_batch_size=args.maxbatchsize,
-                          model_type=args.model_type)
+                          model_type=args.model_type,
+                          max_epochs_without_progress=args.max_epochs_without_progress)
     trainer.main_loop()
