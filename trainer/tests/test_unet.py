@@ -94,18 +94,14 @@ def test_training():
 def test_mask_training():
     """ test that network can be trained,
         and can approximate a square.
-        This time also using a mask of the 'defined' region """
+        This time using the production sparse-supervision loss path. """
 
     import torch
     from model_utils import get_device
     import numpy as np
-    from torch.nn.functional import softmax, binary_cross_entropy 
+    from torch.nn.functional import softmax
     from loss import combined_loss as criterion
 
-    # would like to experiment with switching to these but more experiments required.
-    #from torch.nn.functional import cross_entropy, binary_cross_entropy
-    from skimage.io import imsave
-    from skimage import img_as_uint
     device = get_device()
     unet = UNetGNRes()
     unet.to(device)
@@ -116,37 +112,27 @@ def test_mask_training():
     test_input = torch.from_numpy(test_input)
     test_input = test_input.float().to(device)
 
-    target = (test_input[:, 0, 36:-36, 36:-36] > 0.5)
-    target = target.float().to(device)
-
-    imsave(os.path.join(temp_out, 'targ.png'),
-           img_as_uint(target.float().cpu().numpy()),
-           check_contrast=False)
+    target = (test_input[:, 0, 36:-36, 36:-36] > 0.5).long()
 
     defined = np.zeros((1, 500, 500))
     defined[:, :250] = 1
     defined = torch.from_numpy(defined).float().to(device)
 
-    from loss import dice_loss, dice_loss2
-    for step in range(30000):
+    # The old version of this test multiplied a logit channel and the target
+    # by ``defined`` before calling an unmasked loss. That was the production
+    # bug this project fixed, not a valid masking test. Pass the mask into the
+    # loss and assess only supervised pixels.
+    defined_bool = defined.bool().cpu().numpy()
+    target_np = target.cpu().numpy()
+    for step in range(300):
         optimizer.zero_grad()
         preds = unet(test_input)
-        preds[:, 0] *= defined
-        target[0] *= defined[0]
-        loss = criterion(preds, target.long())
+        loss = criterion(preds, target, mask=defined)
         loss.backward()
         optimizer.step()
-        output = softmax(preds, 1)[:, 1] # just fg probability
-        output = output.detach().cpu().numpy()
-        output = output[0] # singke image.
-        im = img_as_uint(output)
-        imsave(os.path.join(temp_out, 'out_' + str(step).zfill(3) + '.png'),
-               im, check_contrast=False)
-        acc = get_acc(output, target)
-        print(acc, end=',')
-        if get_acc(output, target) == 1:
+        output = softmax(preds, 1)[:, 1].detach().cpu().numpy()
+        acc = get_acc(output[defined_bool], target_np[defined_bool])
+        if acc == 1:
             print('reached acc of ', acc, 'after', step, 'steps')
             return # test passes. loss is low enough
     raise Exception('acc low, acc = ' + str(acc))
-
-

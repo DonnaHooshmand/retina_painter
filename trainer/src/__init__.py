@@ -48,6 +48,12 @@ parser.add_argument('--max-epochs-without-progress',
                     default=60,
                     help=('stop training after this many validation epochs'
                           ' with no improvement in validation loss'))
+parser.add_argument('--loss-type',
+                    default='auto',
+                    choices=['auto', 'combined', 'tversky'],
+                    help=("training loss: 'auto' uses combined Dice/CE for "
+                          "every model; explicit choices support controlled "
+                          "loss ablations"))
 
 def start():
     from trainer import Trainer
@@ -56,9 +62,11 @@ def start():
         trainer = Trainer(sync_dir=args.syncdir,
                           max_batch_size=args.maxbatchsize,
                           model_type=args.model_type,
+                          loss_type=args.loss_type,
                           max_epochs_without_progress=args.max_epochs_without_progress)
     else:
         trainer = Trainer(max_batch_size=args.maxbatchsize,
                           model_type=args.model_type,
+                          loss_type=args.loss_type,
                           max_epochs_without_progress=args.max_epochs_without_progress)
     trainer.main_loop()

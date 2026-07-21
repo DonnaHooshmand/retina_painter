@@ -50,7 +50,7 @@ src_dir = os.path.join(os.path.dirname(test_dir), 'src')
 sys.path.insert(0, src_dir)
 
 # pylint: disable=C0413
-from loss import combined_loss, tversky_loss
+from loss import combined_loss
 
 
 def pick_device():
@@ -285,10 +285,11 @@ def main():
         print(f'  built in {time.time() - t0:.1f}s '
               f'({sum(p.numel() for p in model.parameters()):,} params)')
 
-        loss_fn = (tversky_loss if model_type == 'retfound_rfa'
-                   else combined_loss)
-        loss_name = ('tversky' if model_type == 'retfound_rfa'
-                     else 'combined')
+        # The painter-facing default is combined loss for both architectures.
+        # Tversky remains covered by the focused loss tests and can be run as
+        # an explicit ablation through --loss-type tversky.
+        loss_fn = combined_loss
+        loss_name = 'combined'
         results.append(smoke_one_model(model_type, model, device,
                                        loss_fn, loss_name))
         # Free GPU memory between models.

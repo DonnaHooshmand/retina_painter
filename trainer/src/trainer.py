@@ -36,7 +36,7 @@ import numpy as np
 import torch
 from torch.nn.functional import softmax
 from torch.utils.data import DataLoader
-from loss import combined_loss, tversky_loss
+from loss import resolve_training_loss_type, training_loss
 
 from datasets import TrainDataset
 from metrics import get_metrics, get_metrics_str, get_metric_csv_row
@@ -71,10 +71,15 @@ class Trainer():
                  max_workers=12,
                  max_batch_size=12,
                  model_type='unet',
+                 loss_type='auto',
                  max_epochs_without_progress=60,
                  ):
 
         self.model_type = model_type
+        # Validate once at startup; in auto mode the resolved loss follows any
+        # later per-project model-type switch from the painter.
+        resolve_training_loss_type(model_type, loss_type)
+        self.loss_type = loss_type
         self.patch_size = patch_size  # stored so model_type switch can restore unet tile size
 
         if model_type == 'unet':
@@ -263,6 +268,9 @@ class Trainer():
         status = {
             "timestamp": time.time(),
             "training": self.training,
+            "model_type": self.model_type,
+            "loss_type": resolve_training_loss_type(
+                self.model_type, self.loss_type),
         }
         if self.training and self.train_config:
             # Include the project being trained so the painter can inform the user
@@ -315,6 +323,13 @@ class Trainer():
             self.train_set = TrainDataset(self.train_config['train_annot_dir'],
                                           self.train_config['dataset_dir'],
                                           self.in_w, self.out_w)
+            resolved_loss = resolve_training_loss_type(
+                self.model_type, self.loss_type)
+            loss_message = (f'Training loss: {resolved_loss} '
+                            f'(requested={self.loss_type}, '
+                            f'model={self.model_type})')
+            print(loss_message, flush=True)
+            self.log(loss_message)
             model_paths = model_utils.get_latest_model_paths(model_dir, 1)
             if model_paths:
                 self.model = model_utils.load_model(model_paths[0],
@@ -412,16 +427,15 @@ class Trainer():
             # contribute zero loss and zero gradient. (The previous
             # `outputs[:, c] *= defined_tiles` trick did not actually
             # ignore them — softmax(0,0) = (0.5, 0.5) still incurred a
-            # constant ~log(2) CE penalty per untouched pixel.)
-            # retfound and retfound_rfa use FN-weighted Tversky (alpha=0.7,
-            # beta=0.3, class_weights=(1.0, 2.0)) for better recall on small,
-            # rare biomarkers. unet / fundusegmenter keep Dice + 0.3 CE.
-            if self.model_type in ('retfound', 'retfound_rfa'):
-                loss = tversky_loss(outputs, foreground_tiles.long(),
-                                    mask=defined_tiles)
-            else:
-                loss = combined_loss(outputs, foreground_tiles,
-                                     mask=defined_tiles)
+            # constant ~log(2) CE penalty per untouched pixel and diluted
+            # gradients on supervised pixels as annotation density changed.)
+            # Every painter-selectable architecture defaults to RootPainter's
+            # combined Dice/CE objective. Tversky is available only through an
+            # explicit loss override for controlled experiments.
+            loss = training_loss(outputs, foreground_tiles.long(),
+                                 model_type=self.model_type,
+                                 mask=defined_tiles,
+                                 loss_type=self.loss_type)
             loss.backward()
             self.optimizer.step()
             foreground_probs *= defined_tiles

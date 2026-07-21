@@ -21,12 +21,34 @@ The key departure from RootPainter is the model backend: instead of a U-Net trai
 
 **Annotation routing — train vs. validation:** New annotations created in the painter are saved to either `<project>/annotations/train/` or `<project>/annotations/val/` based on a 5:1 file-count ratio (`get_new_annot_target_dir` in [painter/src/main/python/file_utils.py:73](painter/src/main/python/file_utils.py:73)). The router has **no awareness of patient ID or any other grouping** — it routes purely by maintaining the count ratio. For research projects with patient-level data leakage concerns (e.g. retinal OCT, where the same patient's scans look very similar), the default router can scramble an externally-prepared patient-level split, putting the same patient's images in both `train/` and `val/` and making the val-F1 early-stopping signal over-optimistic.
 
+**Reproducible annotation order:** The New Project dialog has an **Image order seed** (default `0`). `create_project.py` sorts the dataset filenames, shuffles them with a local seeded RNG, stores both `image_order_seed` and the resulting `file_names` list in the `.seg_proj`, and navigation follows that stored list. Use the same fixed dataset and seed for matched model trials. This setting controls the B-scans presented to the annotator; a trainer seed does not.
+
 Two workarounds today, with a planned permanent fix:
 - **Pre-populate empty annotation PNGs** at the correct train/val location before opening the painter. The painter's `get_annot_path` ([file_utils.py:58](painter/src/main/python/file_utils.py:58)) finds the existing file and `maybe_save_annotation` overwrites in place, never invoking the 5:1 router. The `prepare_annotations.py` script in the user's data-prep tooling does this.
 - **Manually move files** between `annotations/train/` and `annotations/val/` after sessions to enforce the desired split.
 - **Planned: explicit train/val source folders** — see the `train-val-split` branch. A "New Project" checkbox lets the user point at separate train and val image directories so the painter routes annotations by source folder rather than by count. Eliminates the workaround entirely.
 
 This concern only affects the **internal validation signal during training** (model selection, early stopping). The held-out *test* set is always a separate physical folder outside the painter project, so its integrity is preserved automatically.
+
+## Clinical Evaluation Contract
+
+RetinaPainter's primary RIPL outcome is **B-scan-level detection**, not contour
+agreement. A held-out B-scan is positive when the clinician gold standard says
+that at least one RIPL is present. Final evaluation must report the raw
+TP/FP/FN/TN confusion matrix plus sensitivity, specificity, PPV, NPV, balanced
+accuracy, and accuracy. Pixel Dice/IoU are secondary engineering diagnostics
+only and must not be the headline basis for choosing an architecture.
+
+Do not confuse the clinical endpoint with the training surrogate. The trainer
+currently uses masked pixel losses, masked pixel F1 for checkpoint selection,
+and masked soft-Dice loss for early stopping. This remains the current
+implementation until a patient-separated detection validation manifest and
+evaluator exist. Sparse corrective annotations are not exhaustive and cannot
+be used to calculate honest B-scan false negatives or true negatives.
+
+If individual lesions are evaluated later, use one-to-one lesion matching and
+report lesion TP/FP/FN, sensitivity, precision, and false positives per B-scan;
+lesion-level TN is undefined.
 
 ## Models
 
@@ -41,7 +63,8 @@ Defined across two files:
 - **`retfound_vit.py`** — `RETFoundViT`: ViT-Large (patch_size=16, embed_dim=1024, depth=24, num_heads=16) with sin-cos positional embeddings. `forward_features(x)` returns `(B, 196, 1024)` patch tokens (cls token dropped). Also exposes `forward_multi_features(x, indices)` which captures intermediate block outputs for RFA skip connections. Weights match the RETFound checkpoint format exactly.
 - **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`iszt/RETFound_mae_natureOCT`) on first use, caching to `~/.cache/retina_painter/`. **This repo is gated — users must request access at https://huggingface.co/iszt/RETFound_mae_natureOCT and authenticate via `huggingface_hub.login()` before the automatic download will work. In practice, use `setup_retfound.py` which downloads from Google Drive instead.**
 
-**Loss** (`loss.py`): Combined 0.7 Dice + 0.3 Cross-Entropy.
+**Loss** (`loss.py`): RootPainter's combined Dice + 0.3 Cross-Entropy objective,
+with untouched pixels masked inside the loss.
 
 ### RETFound + RFA-U-Net decoder (`--model-type retfound_rfa`)
 
@@ -64,7 +87,7 @@ Each skip connection passes through an `_AttentionGate` (additive attention: Wg 
 - `freeze_encoder_blocks(num_blocks=21)` — freezes first N transformer blocks; leaves decoder + last 3 blocks trainable (matches RFA-U-Net paper)
 - `in_w = out_w = 224`, same tile_pad=0 constraint as `retfound`
 
-**Loss** (`loss.py`): `tversky_loss(predictions, labels, alpha=0.7, beta=0.3, class_weights=(1.0, 2.0))` — upweights false negatives, better for rare/small foreground regions.
+**Loss** (`loss.py`): RootPainter's combined Dice + 0.3 Cross-Entropy objective, with untouched pixels masked inside the loss. This is the painter-facing default for every model so model selection does not silently change the optimization objective. Tversky remains available only through an explicit `--loss-type tversky` ablation.
 
 **Optimizer**: AdamW (lr=1e-4, weight_decay=1e-4) applied to trainable params only (frozen blocks excluded). `retfound` continues to use SGD.
 
@@ -132,6 +155,9 @@ cd trainer/src && python -u main.py --syncdir ~/root_painter_sync --model-type r
 # RETFound + RFA-U-Net attention decoder (recommended for new projects)
 cd trainer/src && python -u main.py --syncdir ~/root_painter_sync --model-type retfound_rfa
 
+# Optional loss ablation: same RFA architecture with Tversky
+cd trainer/src && python -u main.py --syncdir ~/root_painter_sync --model-type retfound_rfa --loss-type tversky
+
 # Or via pip entry point after install
 start-trainer --syncdir ~/root_painter_sync
 start-trainer --syncdir ~/root_painter_sync --model-type retfound
@@ -145,18 +171,19 @@ Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
 ## Testing
 
-Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 44 tests; takes ~80s on CPU.
+Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 67 tests; runtime depends heavily on the available accelerator.
 
 ```bash
 cd trainer/tests
 
 # Full unit suite (fast, no downloads)
 python -m pytest test_loss.py test_unet.py test_utils.py test_loss_masking.py \
-                  test_retfound.py test_retfound_rfa.py -v
+                  test_retfound.py test_retfound_rfa.py \
+                  test_fundusegmenter.py test_metrics.py test_instructions.py -v
 
 # Individual files
 python -m pytest test_retfound.py -v          # RETFound plain decoder
-python -m pytest test_retfound_rfa.py -v      # RFA-U-Net decoder + Tversky
+python -m pytest test_retfound_rfa.py -v      # RFA decoder + optional Tversky tests
 python -m pytest test_loss_masking.py -v      # sparse-supervision masking
 
 # Single test
@@ -169,7 +196,7 @@ python -m pytest test_training.py -v -s
 **Coverage:**
 - `test_retfound.py` (12 tests) — ViT token shape, `RETFoundSeg` forward pass shape, softmax correctness, gradient flow through decoder, and a tiling smoke test.
 - `test_retfound_rfa.py` (18 tests) — `forward_multi_features` shape, `RETFoundSegRFA` forward pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing, Tversky loss properties, and a tiling smoke test.
-- `test_loss_masking.py` (9 tests, Phase 1) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both `combined_loss` and `tversky_loss`; parity with legacy unmasked loss when mask is all-1s; documents the legacy `outputs *= mask` leak so it cannot be re-introduced.
+- `test_loss_masking.py` (18 tests, Phase 1 + loss routing) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both `combined_loss` and `tversky_loss`; loss is invariant to the amount of untouched canvas; parity with legacy unmasked loss when mask is all-1s; model families route to their intended objectives; and explicit loss overrides work for controlled ablations.
 
 **End-to-end smoke scripts** (not collected by pytest, run manually):
 - `smoke_phase1.py` — UNet integration: 30-step training run, legacy-vs-fixed loss comparison across untouched-fraction settings, gradient isolation. Runs in ~30s on CPU.
@@ -259,7 +286,7 @@ Based on: Hayati, A. et al. (2025). RFA-U-Net: A Foundation Model-Driven Approac
 - `loss.py`: added `tversky_loss(predictions, labels, alpha=0.7, beta=0.3, class_weights=(1.0, 2.0))`
 - `model_utils.py`: `_build_model` and `create_first_model_with_random_weights` handle `retfound_rfa`; reuses `download_retfound_weights()` from `retfound_model`
 - `main.py` + `src/__init__.py`: `--model-type` choices extended to `['unet', 'retfound', 'retfound_rfa']`
-- `trainer.py`: `retfound_rfa` shares `in_w=out_w=224`; uses Tversky loss and AdamW optimizer (lr=1e-4) instead of combined loss + SGD; calls `freeze_encoder_blocks(21)` after first model load
+- `trainer.py`: `retfound_rfa` shares `in_w=out_w=224`; uses the common combined-loss default plus AdamW (lr=1e-4), and calls `freeze_encoder_blocks(21)` after first model load. The original Tversky objective remains available as an explicit ablation.
 - `test_retfound_rfa.py` (new): 15 passing unit tests
 
 **Backward compatibility:** `retfound` checkpoints are incompatible with `retfound_rfa` (different decoder keys). Projects must be started fresh with the new `--model-type`. Existing `retfound` projects continue to work unchanged.
@@ -282,7 +309,7 @@ Based on: Hayati, A. et al. (2025). RFA-U-Net: A Foundation Model-Driven Approac
 
 ### Annotation semantics (sparse supervision policy)
 
-RetinaPainter uses **sparse corrective annotation**: only pixels the clinician explicitly painted as foreground or background are supervised. Untouched pixels are unknown — they must contribute zero loss and zero gradient. The full plan, including a forthcoming `unsure` annotation category, is in [docs/supervision_plan.md](docs/supervision_plan.md).
+RetinaPainter uses **sparse corrective annotation**: only pixels the clinician explicitly painted as foreground or background are supervised. Untouched pixels are unknown — they must contribute zero loss and zero gradient. A forthcoming `unsure` annotation category will also be excluded from loss while retaining ambiguity metadata.
 
 **Phase 1 status — DONE (2026-04-27).** The masked loss path is now correct: `combined_loss` and `tversky_loss` accept a `mask` argument and apply it inside the loss; the old `outputs[:, c] *= defined_tiles` trick was leaky (softmax(0,0) = (0.5, 0.5) still incurred a constant CE penalty per untouched pixel). `datasets.py` now uses `np.logical_or(foreground, background)` for the supervision mask, with an assertion that fg/bg never overlap. `model_utils.unet_segment` also got a defensive `cnn = cnn.to(device)` so any caller that forgets to move a `DataParallel`-wrapped model to the inference device doesn't trip a CPU-vs-MPS/CUDA mismatch on RETFound's registered ImageNet-normalization buffers. Regression tests live at `trainer/tests/test_loss_masking.py`; UNet smoke at `trainer/tests/smoke_phase1.py`; RETFound + RETFound-RFA GPU smoke at `trainer/tests/smoke_phase1_gpu.py`. Expected post-fix training loss is lower by an amount that scales roughly linearly with the untouched fraction of each tile — that is **not** a regression. (Measured on a 50%-untouched synthetic tile: combined_loss drops ~0.14 nats, tversky_loss drops ~0.06 nats.)
 

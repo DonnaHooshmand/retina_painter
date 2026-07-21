@@ -186,3 +186,34 @@ def tversky_loss(predictions, labels, mask=None, alpha=0.7, beta=0.3,
         weighted_sum = weighted_sum + float(w) * (1 - tversky)
         weight_total += float(w)
     return weighted_sum / max(weight_total, 1e-8)
+
+
+def resolve_training_loss_type(model_type, loss_type='auto'):
+    """Resolve an explicit or model-family-default loss selection."""
+    valid_loss_types = ('auto', 'combined', 'tversky')
+    if loss_type not in valid_loss_types:
+        raise ValueError(
+            f"Unknown loss type {loss_type!r}; expected one of "
+            f"{valid_loss_types}"
+        )
+    if loss_type == 'auto':
+        # Keep the training objective constant when the user selects a model
+        # in the painter. This makes the U-Net -> RETFound -> RFA comparison
+        # an architecture comparison instead of silently changing the loss.
+        return 'combined'
+    return loss_type
+
+
+def training_loss(predictions, labels, model_type='unet', mask=None,
+                  loss_type='auto'):
+    """Return the intended training loss for a model family.
+
+    Every model defaults to RootPainter's combined Dice/CE objective so
+    selecting an architecture in the painter does not also change the
+    optimization target. ``loss_type='tversky'`` remains available as an
+    explicit controlled ablation without changing checkpoint structure.
+    """
+    resolved_loss_type = resolve_training_loss_type(model_type, loss_type)
+    if resolved_loss_type == 'tversky':
+        return tversky_loss(predictions, labels, mask=mask)
+    return combined_loss(predictions, labels, mask=mask)

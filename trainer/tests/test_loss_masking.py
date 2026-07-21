@@ -26,7 +26,8 @@ src_dir = os.path.join(os.path.dirname(test_dir), 'src')
 sys.path.insert(0, src_dir)
 
 # pylint: disable=C0413
-from loss import combined_loss, tversky_loss
+from loss import (combined_loss, resolve_training_loss_type, training_loss,
+                  tversky_loss)
 
 
 def _make_three_region_tile(h=8, w=12):
@@ -131,7 +132,7 @@ def test_combined_loss_handles_all_untouched_tile():
 
 
 # ---------------------------------------------------------------------------
-# tversky_loss (used by retfound_rfa)
+# tversky_loss (optional explicit ablation)
 # ---------------------------------------------------------------------------
 
 def test_tversky_loss_invariant_to_untouched_logits():
@@ -188,6 +189,61 @@ def test_tversky_loss_handles_all_untouched_tile():
     assert torch.all(logits.grad == 0)
 
 
+@pytest.mark.parametrize('loss_fn', [combined_loss, tversky_loss])
+def test_masked_loss_invariant_to_amount_of_untouched_area(loss_fn):
+    """Extra untouched pixels must not dilute the supervised objective."""
+    logits, labels, mask = _make_three_region_tile()
+
+    full_loss = loss_fn(logits, labels, mask=mask)
+    supervised_only_loss = loss_fn(
+        logits[:, :, :, :8],
+        labels[:, :, :8],
+        mask=mask[:, :, :8],
+    )
+
+    assert torch.allclose(full_loss, supervised_only_loss, atol=1e-6), (
+        f"{loss_fn.__name__} changed when untouched canvas area was removed: "
+        f"full={full_loss.item():.6f}, "
+        f"supervised_only={supervised_only_loss.item():.6f}"
+    )
+
+
+@pytest.mark.parametrize(
+    'model_type', ['unet', 'retfound', 'retfound_rfa', 'fundusegmenter'])
+def test_all_models_default_to_combined_loss(model_type):
+    """Picking a model in the painter must not silently change the loss."""
+    logits, labels, mask = _make_three_region_tile()
+    actual = training_loss(logits, labels, model_type=model_type, mask=mask)
+    expected = combined_loss(logits, labels, mask=mask)
+    assert torch.allclose(actual, expected)
+
+
+@pytest.mark.parametrize(
+    ('model_type', 'loss_type', 'expected_fn'),
+    [
+        ('retfound_rfa', 'tversky', tversky_loss),
+        ('retfound', 'tversky', tversky_loss),
+    ],
+)
+def test_explicit_loss_type_overrides_model_default(model_type, loss_type,
+                                                    expected_fn):
+    logits, labels, mask = _make_three_region_tile()
+    actual = training_loss(
+        logits,
+        labels,
+        model_type=model_type,
+        mask=mask,
+        loss_type=loss_type,
+    )
+    expected = expected_fn(logits, labels, mask=mask)
+    assert torch.allclose(actual, expected)
+
+
+def test_unknown_loss_type_is_rejected():
+    with pytest.raises(ValueError, match='Unknown loss type'):
+        resolve_training_loss_type('retfound', 'mystery')
+
+
 # ---------------------------------------------------------------------------
 # Demonstration: legacy "outputs *= mask" trick was leaky
 # ---------------------------------------------------------------------------
@@ -197,9 +253,10 @@ def test_legacy_zeroing_logits_was_leaky():
 
     Multiplying the logits by the mask (the old approach) is *not* the
     same as masking the loss: softmax(0, 0) = (0.5, 0.5), so each
-    untouched pixel still incurs a constant CE penalty. This test
-    exists to make sure nobody re-introduces the old behavior thinking
-    it's equivalent.
+    untouched pixel still incurs a constant CE penalty and the loss
+    reduction dilutes gradients on supervised pixels according to the
+    amount of untouched canvas. This test exists to make sure nobody
+    re-introduces the old behavior thinking it's equivalent.
     """
     logits, labels, mask = _make_three_region_tile()
 

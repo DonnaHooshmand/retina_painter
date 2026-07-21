@@ -21,6 +21,8 @@ The key departure from RootPainter is the model backend: instead of a U-Net trai
 
 **Annotation routing — train vs. validation:** New annotations created in the painter are saved to either `<project>/annotations/train/` or `<project>/annotations/val/` based on a 5:1 file-count ratio (`get_new_annot_target_dir` in [painter/src/main/python/file_utils.py:73](painter/src/main/python/file_utils.py:73)). The router has **no awareness of patient ID or any other grouping** — it routes purely by maintaining the count ratio. For research projects with patient-level data leakage concerns (e.g. retinal OCT, where the same patient's scans look very similar), the default router can scramble an externally-prepared patient-level split, putting the same patient's images in both `train/` and `val/` and making the val-F1 early-stopping signal over-optimistic.
 
+**Reproducible annotation order:** The New Project dialog has an **Image order seed** (default `0`). `create_project.py` sorts the dataset filenames, shuffles them with a local seeded RNG, stores both `image_order_seed` and the resulting `file_names` list in the `.seg_proj`, and navigation follows that stored list. Use the same fixed dataset and seed for matched model trials. This setting controls the B-scans presented to the annotator; a trainer seed does not.
+
 Two workarounds today, with a planned permanent fix:
 - **Pre-populate empty annotation PNGs** at the correct train/val location before opening the painter. The painter's `get_annot_path` ([file_utils.py:58](painter/src/main/python/file_utils.py:58)) finds the existing file and `maybe_save_annotation` overwrites in place, never invoking the 5:1 router. The `prepare_annotations.py` script in the user's data-prep tooling does this.
 - **Manually move files** between `annotations/train/` and `annotations/val/` after sessions to enforce the desired split.
@@ -41,7 +43,7 @@ Defined across two files:
 - **`retfound_vit.py`** — `RETFoundViT`: ViT-Large (patch_size=16, embed_dim=1024, depth=24, num_heads=16) with sin-cos positional embeddings. `forward_features(x)` returns `(B, 196, 1024)` patch tokens (cls token dropped). Also exposes `forward_multi_features(x, indices)` which captures intermediate block outputs for RFA skip connections. Weights match the RETFound checkpoint format exactly.
 - **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`iszt/RETFound_mae_natureOCT`) on first use, caching to `~/.cache/retina_painter/`. **This repo is gated — users must request access at https://huggingface.co/iszt/RETFound_mae_natureOCT and authenticate via `huggingface_hub.login()` before the automatic download will work. In practice, use `setup_retfound.py` which downloads from Google Drive instead.**
 
-**Loss** (`loss.py`): `tversky_loss(predictions, labels, alpha=0.7, beta=0.3, class_weights=(1.0, 2.0))` — the same FN-weighted Tversky as `retfound_rfa`, chosen for better recall on small, rare biomarkers. (Note: the optimizer for `retfound` remains SGD, unlike `retfound_rfa`'s AdamW.)
+**Loss** (`loss.py`): RootPainter's combined Dice + 0.3 Cross-Entropy objective, with sparse-supervision masking applied inside the loss. This is the default for every model. The optimizer is SGD; Tversky is available only as an explicit ablation.
 
 ### RETFound + RFA-U-Net decoder (`--model-type retfound_rfa`)
 
@@ -64,7 +66,7 @@ Each skip connection passes through an `_AttentionGate` (additive attention: Wg 
 - `freeze_encoder_blocks(num_blocks=21)` — freezes first N transformer blocks; leaves decoder + last 3 blocks trainable (matches RFA-U-Net paper)
 - `in_w = out_w = 224`, same tile_pad=0 constraint as `retfound`
 
-**Loss** (`loss.py`): `tversky_loss(predictions, labels, alpha=0.7, beta=0.3, class_weights=(1.0, 2.0))` — upweights false negatives, better for rare/small foreground regions.
+**Loss** (`loss.py`): RootPainter's combined Dice + 0.3 Cross-Entropy objective by default. `tversky_loss(predictions, labels, alpha=0.7, beta=0.3, class_weights=(1.0, 2.0))` remains available through `--loss-type tversky` for controlled experiments.
 
 **Optimizer**: AdamW (lr=1e-4, weight_decay=1e-4) applied to trainable params only (frozen blocks excluded). `retfound` continues to use SGD.
 
@@ -158,7 +160,7 @@ Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
 ## Testing
 
-Tests are in `trainer/tests/`. Run from that directory. Full unit suite is ~53 tests; takes ~90s on CPU.
+Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 67 tests; runtime depends heavily on the available accelerator.
 
 ```bash
 cd trainer/tests
@@ -166,11 +168,12 @@ cd trainer/tests
 # Full unit suite (fast, no downloads)
 # (test_utils.py is a shared helper module, not a test file)
 python -m pytest test_loss.py test_unet.py test_metrics.py test_loss_masking.py \
-                  test_retfound.py test_retfound_rfa.py test_fundusegmenter.py -v
+                  test_retfound.py test_retfound_rfa.py test_fundusegmenter.py \
+                  test_instructions.py -v
 
 # Individual files
 python -m pytest test_retfound.py -v          # RETFound plain decoder
-python -m pytest test_retfound_rfa.py -v      # RFA-U-Net decoder + Tversky
+python -m pytest test_retfound_rfa.py -v      # RFA decoder + optional Tversky tests
 python -m pytest test_loss_masking.py -v      # sparse-supervision masking
 
 # Single test
@@ -183,7 +186,7 @@ python -m pytest test_training.py -v -s
 **Coverage:**
 - `test_retfound.py` (12 tests) — ViT token shape, `RETFoundSeg` forward pass shape, softmax correctness, gradient flow through decoder, and a tiling smoke test.
 - `test_retfound_rfa.py` (18 tests) — `forward_multi_features` shape, `RETFoundSegRFA` forward pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing, Tversky loss properties, and a tiling smoke test.
-- `test_loss_masking.py` (9 tests, Phase 1) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both `combined_loss` and `tversky_loss`; parity with legacy unmasked loss when mask is all-1s; documents the legacy `outputs *= mask` leak so it cannot be re-introduced.
+- `test_loss_masking.py` (18 tests, Phase 1 + loss routing) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both losses; the loss is invariant to untouched-canvas size; fully defined masks match legacy unmasked behavior; each model family routes to its intended objective; and explicit loss overrides work for controlled ablations.
 - `test_fundusegmenter.py` (4 tests) — FunduSegmenter import, forward-pass shape (572→500, identical to UNet), no-NaN output, and `_build_model('fundusegmenter')` routing. (FunduSegmenter is currently a UNet placeholder — see Models.)
 - `test_metrics.py` (5 tests) — `get_metrics` returns 0.0 (not NaN) when there are no true positives, does not divide by zero when no pixels are defined, and passes the validation loss through.
 
@@ -248,9 +251,10 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 
 ### Maintenance & correctness fixes (2026-06-11)
 
-A review pass over the model/loss/training code produced these fixes (all model/loss/metrics unit suites green — 53 tests):
+A review pass over the model/loss/training code produced these fixes, covered by the model/loss/metrics unit suites:
 
-- **`retfound` now trains with Tversky loss** (the same FN-weighted `tversky_loss` as `retfound_rfa`), for better recall on small, rare biomarkers. `unet`/`fundusegmenter` keep `combined_loss` (Dice + 0.3·CE). `retfound`'s optimizer stays SGD (only `retfound_rfa` uses AdamW). Loss routing in `trainer.py`: `if self.model_type in ('retfound', 'retfound_rfa')`.
+- **Loss routing is centralized in `loss.training_loss`.** `auto` resolves to RootPainter's `combined_loss` (Dice + 0.3·CE) for every model so the front-end model selector changes only the architecture.
+- **`--loss-type {auto,combined,tversky}` supports controlled ablations.** Tversky requires an explicit override. Changing the loss does not change checkpoint structure, but separate fresh project copies are required for interpretable comparisons.
 - **Early stopping reworked** — model selection stays F1-based, but the *stop* signal is now a continuous validation loss (`1 - masked soft Dice`) instead of "F1 didn't improve". Prevents premature stops on rare lesions where F1 sits at 0 during warmup. See **Validation & Early Stopping**. New `--max-epochs-without-progress` CLI flag (default 60) on `main.py` + `src/__init__.py`.
 - **`get_metrics` returns 0.0 (not NaN) when there are no true positives**, and guards every `/ total` division against `total == 0` (no more crash on an empty val tile). `metrics.py`.
 - **`train_one_epoch` photo guard fixed** — `if not [is_photo(a) for a in ls(d)]` (truthy unless the dir is empty) → `if not any(is_photo(a) ...)`. `trainer.py`.
@@ -288,7 +292,7 @@ Based on: Hayati, A. et al. (2025). RFA-U-Net: A Foundation Model-Driven Approac
 - `loss.py`: added `tversky_loss(predictions, labels, alpha=0.7, beta=0.3, class_weights=(1.0, 2.0))`
 - `model_utils.py`: `_build_model` and `create_first_model_with_random_weights` handle `retfound_rfa`; reuses `download_retfound_weights()` from `retfound_model`
 - `main.py` + `src/__init__.py`: `--model-type` choices extended to `['unet', 'retfound', 'retfound_rfa']`
-- `trainer.py`: `retfound_rfa` shares `in_w=out_w=224`; uses Tversky loss and AdamW optimizer (lr=1e-4) instead of combined loss + SGD; calls `freeze_encoder_blocks(21)` after first model load
+- `trainer.py`: `retfound_rfa` shares `in_w=out_w=224`; uses the common combined-loss default plus AdamW (lr=1e-4), and calls `freeze_encoder_blocks(21)` after first model load. Tversky remains an explicit ablation.
 - `test_retfound_rfa.py` (new): 15 passing unit tests
 
 **Backward compatibility:** `retfound` checkpoints are incompatible with `retfound_rfa` (different decoder keys). Projects must be started fresh with the new `--model-type`. Existing `retfound` projects continue to work unchanged.
@@ -311,7 +315,7 @@ Based on: Hayati, A. et al. (2025). RFA-U-Net: A Foundation Model-Driven Approac
 
 ### Annotation semantics (sparse supervision policy)
 
-RetinaPainter uses **sparse corrective annotation**: only pixels the clinician explicitly painted as foreground or background are supervised. Untouched pixels are unknown — they must contribute zero loss and zero gradient. The full plan, including a forthcoming `unsure` annotation category, is in [docs/supervision_plan.md](docs/supervision_plan.md).
+RetinaPainter uses **sparse corrective annotation**: only pixels the clinician explicitly painted as foreground or background are supervised. Untouched pixels are unknown — they must contribute zero loss and zero gradient. A forthcoming `unsure` annotation category will also be excluded from loss while retaining ambiguity metadata.
 
 **Phase 1 status — DONE (2026-04-27).** Untouched pixels were previously leaking into the loss: `outputs[:, c] *= defined_tiles` zeroed the logits, but `softmax(0,0) = (0.5, 0.5)` so each undefined pixel still incurred a constant `~log(2)` CE penalty (and a Dice/Tversky contribution). The fix:
 
@@ -319,7 +323,7 @@ RetinaPainter uses **sparse corrective annotation**: only pixels the clinician e
 - `trainer.py` (and `model_utils.epoch`): pass `defined_tiles` to the loss; remove the old `outputs[:, c] *= defined_tiles` trick.
 - `datasets.py`: `mask = np.logical_or(foreground, background)` plus an explicit assertion that fg/bg never overlap (defensive against malformed PNGs and any future code path that merges the model prediction into the annotation file).
 - `model_utils.unet_segment`: added a defensive `cnn = cnn.to(device)` so callers that wrap a model in `DataParallel` without moving it (e.g. tests) don't trip an MPS / CUDA vs CPU mismatch on RETFound's registered ImageNet-normalization buffers. Production callers (`load_model`, `ensemble_segment`) already moved the model — this is just a guardrail.
-- Regression tests in `trainer/tests/test_loss_masking.py` (9 tests, all passing) lock in the contract: zero gradient and zero loss-value sensitivity in untouched regions, parity with legacy unmasked loss when mask is all-1s, and a "legacy was leaky" demonstration test that prevents anyone from re-introducing the old approach. End-to-end UNet smoke at `smoke_phase1.py` and RETFound + RETFound-RFA GPU smoke at `smoke_phase1_gpu.py`.
+- Regression tests in `trainer/tests/test_loss_masking.py` (18 cases) lock in the contract: zero gradient and zero loss-value sensitivity in untouched regions, invariance to untouched-canvas size, parity with legacy unmasked loss when mask is all-1s, correct model-to-loss routing, and explicit ablation overrides. End-to-end UNet smoke at `smoke_phase1.py` and RETFound + RETFound-RFA GPU smoke at `smoke_phase1_gpu.py`.
 
 **Expected loss-value shift after the fix:** average training loss drops in proportion to the untouched fraction of each tile (the constant CE penalty per untouched pixel goes away). On a 50%-untouched synthetic tile measured with the smoke test, `combined_loss` drops by ~0.14 nats and `tversky_loss` by ~0.06 nats; at 75% untouched the drops are ~0.25 and ~0.13 respectively. The shape is roughly linear in untouched fraction. This is **not** a regression — it's the leak being removed.
 

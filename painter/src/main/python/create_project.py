@@ -17,7 +17,6 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #pylint: disable=I1101,C0111,W0201,R0903,E0611, R0902, R0914
 import os
-import random
 import time
 import shutil
 import json
@@ -30,6 +29,7 @@ from im_utils import is_image
 import file_utils
 from name_edit_widget import NameEditWidget
 from palette import PaletteEditWidget
+from project_order import seeded_file_order
 
 class CreateProjectWidget(QtWidgets.QWidget):
 
@@ -42,6 +42,7 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.selected_model = None
         self.use_random_weights = True
         self.model_type = 'unet'
+        self.image_order_seed = 0
         self.sync_dir = sync_dir
         self.initUI()
 
@@ -53,6 +54,7 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.layout.addWidget(self.name_edit_widget)
 
         self.add_im_dir_widget()
+        self.add_image_order_seed_widget()
         self.add_model_type_widget()
         self.add_radio_widget()
         self.add_model_btn()
@@ -71,6 +73,36 @@ class CreateProjectWidget(QtWidgets.QWidget):
         specify_image_dir_btn = QtWidgets.QPushButton('Specify image directory')
         specify_image_dir_btn.clicked.connect(self.select_photo_dir)
         self.layout.addWidget(specify_image_dir_btn)
+
+    def add_image_order_seed_widget(self):
+        seed_widget = QtWidgets.QWidget()
+        seed_layout = QtWidgets.QHBoxLayout()
+        seed_layout.setContentsMargins(0, 0, 0, 0)
+        seed_widget.setLayout(seed_layout)
+
+        seed_label = QtWidgets.QLabel("Image order seed:")
+        seed_layout.addWidget(seed_label)
+
+        self.image_order_seed_spin = QtWidgets.QSpinBox()
+        self.image_order_seed_spin.setRange(0, 2_147_483_647)
+        self.image_order_seed_spin.setValue(self.image_order_seed)
+        self.image_order_seed_spin.setToolTip(
+            "Projects created from the same dataset with the same seed show "
+            "images in the same order."
+        )
+        self.image_order_seed_spin.valueChanged.connect(
+            self.on_image_order_seed_changed)
+        seed_layout.addWidget(self.image_order_seed_spin)
+        self.layout.addWidget(seed_widget)
+
+        seed_hint = QtWidgets.QLabel(
+            "Use the same seed for matched U-Net, RETFound, and RFA trials."
+        )
+        seed_hint.setWordWrap(True)
+        self.layout.addWidget(seed_hint)
+
+    def on_image_order_seed_changed(self, seed):
+        self.image_order_seed = int(seed)
 
     def add_model_type_widget(self):
         label = QtWidgets.QLabel("Model type:")
@@ -284,14 +316,12 @@ class CreateProjectWidget(QtWidgets.QWidget):
                             'models' / model_name)
             original_model_file = self.selected_model
 
-        # get files in random order for training.
+        # Store a reproducible navigation order for annotation.
         all_fnames = file_utils.ls(dataset_path)
         # images only
         all_fnames = [a for a in all_fnames if is_image(a)]
 
-        all_fnames = sorted(all_fnames)
-        random.shuffle(all_fnames)
-       
+        all_fnames = seeded_file_order(all_fnames, self.image_order_seed)
 
         dataset_abs_path = os.path.abspath(dataset_path)
         datasets_abs_path = os.path.abspath(os.path.join(self.sync_dir, 'datasets'))
@@ -306,6 +336,7 @@ class CreateProjectWidget(QtWidgets.QWidget):
             'original_model_file': original_model_file,
             'location': str(PurePosixPath(project_location)),
             'file_names': all_fnames,
+            'image_order_seed': self.image_order_seed,
             'model_type': self.model_type
         }
         # 'classes': self.palette_edit_widget.get_brush_data()

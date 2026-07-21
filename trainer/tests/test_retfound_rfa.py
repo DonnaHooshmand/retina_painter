@@ -1,5 +1,6 @@
 """
-Unit tests for the RFA-U-Net backbone (RETFoundSegRFA) and Tversky loss.
+Unit tests for the RFA-U-Net backbone (RETFoundSegRFA) and the optional
+Tversky-loss implementation.
 
 All tests use random weights — no checkpoint download required.
 

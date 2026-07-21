@@ -14,8 +14,8 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 - **Foundation model backbone** — The U-Net is replaced with RETFound ViT-Large, a Vision Transformer pre-trained via masked autoencoder self-supervision on 1.6M unlabeled retinal images. Two segmentation heads are available, selected from a dropdown in the **New Project** dialog:
   - **U-Net (original RootPainter)** — scratch-trained U-Net with Group Normalization, unchanged from RootPainter.
-  - **RETFound + plain decoder** — plain 4-stage transposed-convolution decoder on top of the RETFound ViT encoder (the encoder is fine-tuned, not frozen). Trained with the same FN-weighted Tversky loss as the RFA decoder, using SGD.
-  - **RETFound + RFA-U-Net (recommended)** — **RFA-U-Net decoder**: uses four intermediate ViT feature maps (Z6, Z12, Z18, Z24) as U-Net-style skip connections, each passed through a progressive upsampling pyramid and fused via additive attention gates. Achieves Dice 95.04% / Jaccard 90.59% on choroid segmentation vs. all CNN and SOTA baselines (Hayati et al., 2025). Uses Tversky loss (α=0.7, β=0.3) and freezes the first 21 of 24 encoder blocks, training only the last 3 blocks + decoder with AdamW.
+  - **RETFound + plain decoder** — plain 4-stage transposed-convolution decoder on top of the RETFound ViT encoder (the encoder is fine-tuned, not frozen). Trained with the inherited combined Dice/CE loss and SGD.
+  - **RETFound + RFA-U-Net (recommended)** — **RFA-U-Net decoder**: uses four intermediate ViT feature maps (Z6, Z12, Z18, Z24) as U-Net-style skip connections, each passed through a progressive upsampling pyramid and fused via additive attention gates. Achieves Dice 95.04% / Jaccard 90.59% on choroid segmentation vs. all CNN and SOTA baselines (Hayati et al., 2025). Uses the same combined Dice/CE loss as every other painter-selectable model, freezes the first 21 of 24 encoder blocks, and trains the remaining blocks + decoder with AdamW.
 
 - **Parameter-efficient fine-tuning (planned)** — LoRA adapter layers will be injected into the ViT encoder so that each interactive training step updates only a small fraction of parameters, enabling near-real-time model updates on a desktop GPU.
 
@@ -23,7 +23,9 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 - **Curriculum learning (planned)** — A staged training scheduler will present examples in order of difficulty (synthetic lesions → clear real cases → ambiguous cases → confounders), further reducing the labeled data required to reach clinical accuracy.
 
-- **Annotation semantics: sparse corrective supervision** — Pixels the clinician paints as foreground or background are supervised; untouched pixels are treated as unknown and excluded from the loss with zero gradient and zero loss-value contribution. (Earlier RootPainter code zeroed the logits at untouched pixels but did not actually exclude them from loss — every untouched pixel added a constant CE penalty, slowing training. RetinaPainter's masked loss fixes this; see Phase 1 in [docs/supervision_plan.md](docs/supervision_plan.md).) A future `unsure` annotation category is planned for explicitly ambiguous regions (blurry imagery, hard lesion edges) — also masked from loss but retained as metadata for curriculum learning and uncertainty evaluation. A dense corrected-target alternative remains a possible future research direction but is not the current contract.
+- **Annotation semantics: sparse corrective supervision** — Pixels the clinician paints as foreground or background are supervised; untouched pixels are treated as unknown and excluded from the loss with zero gradient and zero loss-value contribution. Earlier RootPainter code zeroed the logits at untouched pixels but did not actually exclude them from loss—every untouched pixel added a constant CE penalty, slowing training. RetinaPainter's masked loss fixes this. A future `unsure` annotation category is planned for explicitly ambiguous regions (blurry imagery, hard lesion edges)—also masked from loss but retained as metadata for curriculum learning and uncertainty evaluation. A dense corrected-target alternative remains a possible future research direction but is not the current contract.
+
+- **Detection-first clinical evaluation** — The primary RIPL endpoint is whether a held-out OCT B-scan contains at least one RIPL. Models are compared using the B-scan confusion matrix and sensitivity, specificity, PPV, NPV, and balanced accuracy. Pixel Dice/IoU are secondary training and localization diagnostics, not measures of clinical success.
 
 ### Roadmap
 
@@ -33,6 +35,7 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 | 1b | RFA-U-Net attention decoder | Complete |
 | 1c | Model type UI dropdown, RetinaPainter rename | Complete |
 | 1d | Sparse-supervision masking fix (untouched pixels truly excluded from loss) | Complete |
+| 1e | B-scan detection evaluator, threshold calibration, and patient-grouped metrics | Planned — next |
 | 2a | `unsure` annotation category (painter brush + masked from loss + curriculum metadata) | Planned |
 | 2b | LoRA parameter-efficient fine-tuning | Planned |
 | 3 | Curriculum learning scheduler (driven in part by `unsure` density) | Planned |
@@ -129,9 +132,13 @@ start-trainer --syncdir /path/to/sync_dir
 
 The `--model-type` CLI arg still exists as a server-side default (useful when the trainer is started independently and the painter has not yet sent a project instruction), but it is not normally needed.
 
-**Early stopping:** training stops automatically after a number of validation epochs with no improvement in the (continuous) validation loss. The default patience is 60 epochs; raise it for hard, slow-to-converge biomarkers with `--max-epochs-without-progress N` (e.g. `--max-epochs-without-progress 120`). Model *selection* uses validation F1 — the best-F1 checkpoint is the one used for segmentation.
+**Early stopping:** training currently stops after a number of validation epochs with no improvement in continuous masked soft-Dice loss. The default patience is 60 epochs; raise it for hard, slow-to-converge biomarkers with `--max-epochs-without-progress N` (e.g. `--max-epochs-without-progress 120`). Checkpoint selection currently uses masked pixel F1. These are internal training mechanisms inherited from the segmentation workflow; they are not the clinical endpoint. Clinical model comparison uses patient-separated B-scan RIPL detection.
 
-**`retfound_rfa` vs `retfound`:** Both use the same encoder weights and 224×224 tiles. `retfound_rfa` adds a U-Net decoder with skip connections from four intermediate ViT layers and attention gates, uses Tversky loss, and trains with AdamW. It achieves better boundary precision at the cost of slightly higher memory.
+**`retfound_rfa` vs `retfound`:** Both use the same encoder weights, 224×224 tiles, and combined Dice/CE loss by default. `retfound_rfa` adds a U-Net decoder with skip connections from four intermediate ViT layers and attention gates, and trains with AdamW. It achieves better boundary precision at the cost of slightly higher memory.
+
+**Loss behavior:** `--loss-type auto` is the front-end default and resolves to the inherited combined Dice/CE loss for every model. Choosing a model in the New Project dialog therefore changes the architecture without silently changing the loss. Tversky remains available only as an explicit developer-side ablation through `--loss-type tversky`; use a separate fresh project for it.
+
+**Matched model trials:** The New Project dialog includes an **Image order seed** (default `0`). Projects created from the same dataset with the same seed store the same deterministic `file_names` order, so **Save & Next** presents identical B-scan sequences for U-Net, RETFound, and RFA trials. This is a painter-project setting, not a trainer flag. Keep the dataset fixed during the comparison.
 
 **First-run note:** Loading the RETFound checkpoint (~3.95 GB) takes 2–5 minutes on both backends. Progress prints appear in the terminal. The first segmentation after startup also loads the model from disk, so expect a similar wait before the first overlay appears.
 
@@ -155,7 +162,7 @@ When prompted, point the painter at the same sync directory used when starting t
 cd trainer/tests
 python -m pytest test_retfound.py -v
 
-# RFA-U-Net decoder + Tversky loss tests (no weight download needed)
+# RFA-U-Net decoder + optional Tversky-loss tests (no weight download needed)
 python -m pytest test_retfound_rfa.py -v
 
 # FunduSegmenter placeholder + metrics tests
