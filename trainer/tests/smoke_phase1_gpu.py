@@ -51,6 +51,7 @@ sys.path.insert(0, src_dir)
 
 # pylint: disable=C0413
 from loss import combined_loss
+from trainer import build_optimizer
 
 
 def pick_device():
@@ -95,36 +96,21 @@ def make_synthetic_batch(bs, in_w, untouched_fraction, device, seed=0):
 
 def build_retfound(model_type, use_real_weights, device):
     """Build either RETFoundSeg or RETFoundSegRFA on the given device."""
-    if model_type == 'retfound':
-        from retfound_model import RETFoundSeg, download_retfound_weights
-        model = RETFoundSeg()
-    elif model_type == 'retfound_rfa':
-        from retfound_rfa_model import RETFoundSegRFA
-        from retfound_model import download_retfound_weights
-        model = RETFoundSegRFA()
-        # Match trainer.py: retfound_rfa freezes the first 21 ViT blocks.
-        model.freeze_encoder_blocks(21)
-    else:
-        raise ValueError(model_type)
-
+    checkpoint_path = None
     if use_real_weights:
+        from retfound_model import download_retfound_weights
         print(f'  Loading real RETFound weights (slow, 2-5 min) ...',
               flush=True)
-        ckpt_path = download_retfound_weights()
-        # Both models load the same MAE checkpoint.
-        sd = torch.load(ckpt_path, map_location='cpu')
-        # The MAE checkpoint format: weights live under "model" key.
-        if isinstance(sd, dict) and 'model' in sd:
-            sd = sd['model']
-        # Encoder-only load: ignore the MAE decoder keys.
-        encoder_state = {k: v for k, v in sd.items()
-                         if not k.startswith('decoder')
-                         and 'mask_token' not in k}
-        missing, unexpected = model.encoder.load_state_dict(
-            encoder_state, strict=False
-        )
-        print(f'  loaded encoder; missing={len(missing)} '
-              f'unexpected={len(unexpected)}', flush=True)
+        checkpoint_path = download_retfound_weights()
+
+    if model_type == 'retfound':
+        from retfound_model import RETFoundSeg
+        model = RETFoundSeg(checkpoint_path=checkpoint_path)
+    elif model_type == 'retfound_rfa':
+        from retfound_rfa_model import RETFoundSegRFA
+        model = RETFoundSegRFA(checkpoint_path=checkpoint_path)
+    else:
+        raise ValueError(model_type)
 
     return model.to(device)
 
@@ -216,12 +202,8 @@ def smoke_one_model(model_type, model, device, loss_fn, loss_name):
         )
 
     # ---- (5) 10 optimizer steps must descend ------------------------------
-    # Match trainer.py: AdamW for retfound_rfa, SGD otherwise.
-    if model_type == 'retfound_rfa':
-        params = [p for p in model.parameters() if p.requires_grad]
-        opt = torch.optim.AdamW(params, lr=1e-4, weight_decay=1e-4)
-    else:
-        opt = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    # Use the exact optimizer/freezing policy configured by the trainer.
+    opt = build_optimizer(model, model_type)
 
     losses = []
     for step in range(10):

@@ -43,7 +43,9 @@ Defined across two files:
 - **`retfound_vit.py`** — `RETFoundViT`: ViT-Large (patch_size=16, embed_dim=1024, depth=24, num_heads=16) with sin-cos positional embeddings. `forward_features(x)` returns `(B, 196, 1024)` patch tokens (cls token dropped). Also exposes `forward_multi_features(x, indices)` which captures intermediate block outputs for RFA skip connections. Weights match the RETFound checkpoint format exactly.
 - **`retfound_model.py`** — `RETFoundSeg`: encoder (`RETFoundViT`) + `_SegDecoder` (4-stage ConvTranspose2d upsampler: 14→28→56→112→224px, outputs `(B, 2, 224, 224)` logits). ImageNet normalization is applied inside `forward()` so tiles can arrive in [0, 1] range as usual. `download_retfound_weights()` fetches `RETFound_oct.pth` from HuggingFace Hub (`iszt/RETFound_mae_natureOCT`) on first use, caching to `~/.cache/retina_painter/`. **This repo is gated — users must request access at https://huggingface.co/iszt/RETFound_mae_natureOCT and authenticate via `huggingface_hub.login()` before the automatic download will work. In practice, use `setup_retfound.py` which downloads from Google Drive instead.**
 
-**Loss** (`loss.py`): RootPainter's combined Dice + 0.3 Cross-Entropy objective, with sparse-supervision masking applied inside the loss. This is the default for every model. The optimizer is SGD; Tversky is available only as an explicit ablation.
+**Loss** (`loss.py`): RootPainter's combined Dice + 0.3 Cross-Entropy objective, with sparse-supervision masking applied inside the loss. This is the default for every model. Tversky is available only as an explicit ablation.
+
+**Fine-tuning and optimizer:** The first 21 of 24 encoder blocks are frozen. The remaining encoder blocks + decoder use AdamW (`lr=1e-4`, `weight_decay=1e-4`). These settings intentionally match `retfound_rfa` so a plain-vs-RFA run primarily compares decoder architecture.
 
 ### RETFound + RFA-U-Net decoder (`--model-type retfound_rfa`)
 
@@ -68,7 +70,7 @@ Each skip connection passes through an `_AttentionGate` (additive attention: Wg 
 
 **Loss** (`loss.py`): RootPainter's combined Dice + 0.3 Cross-Entropy objective by default. `tversky_loss(predictions, labels, alpha=0.7, beta=0.3, class_weights=(1.0, 2.0))` remains available through `--loss-type tversky` for controlled experiments.
 
-**Optimizer**: AdamW (lr=1e-4, weight_decay=1e-4) applied to trainable params only (frozen blocks excluded). `retfound` continues to use SGD.
+**Optimizer**: AdamW (lr=1e-4, weight_decay=1e-4) applied to trainable params only (frozen blocks excluded). Plain `retfound` uses the same optimizer and 21/24-block freezing policy for a controlled decoder comparison.
 
 **RETFound weight notes (shared by both retfound variants):**
 - The checkpoint is a full MAE checkpoint (~3.95 GB), not just encoder weights
@@ -160,7 +162,7 @@ Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
 ## Testing
 
-Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 67 tests; runtime depends heavily on the available accelerator.
+Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 74 tests; runtime depends heavily on the available accelerator.
 
 ```bash
 cd trainer/tests
@@ -184,7 +186,7 @@ python -m pytest test_training.py -v -s
 ```
 
 **Coverage:**
-- `test_retfound.py` (12 tests) — ViT token shape, `RETFoundSeg` forward pass shape, softmax correctness, gradient flow through decoder, and a tiling smoke test.
+- `test_retfound.py` (14 tests) — ViT token shape, `RETFoundSeg` forward pass shape, strict checkpoint compatibility, softmax correctness, gradient flow, 21/24-block encoder freezing, and a tiling smoke test.
 - `test_retfound_rfa.py` (18 tests) — `forward_multi_features` shape, `RETFoundSegRFA` forward pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing, Tversky loss properties, and a tiling smoke test.
 - `test_loss_masking.py` (18 tests, Phase 1 + loss routing) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both losses; the loss is invariant to untouched-canvas size; fully defined masks match legacy unmasked behavior; each model family routes to its intended objective; and explicit loss overrides work for controlled ablations.
 - `test_fundusegmenter.py` (4 tests) — FunduSegmenter import, forward-pass shape (572→500, identical to UNet), no-NaN output, and `_build_model('fundusegmenter')` routing. (FunduSegmenter is currently a UNet placeholder — see Models.)

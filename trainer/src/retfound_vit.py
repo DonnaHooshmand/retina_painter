@@ -190,14 +190,33 @@ class RETFoundViT(nn.Module):
 # Factory
 # ---------------------------------------------------------------------------
 
+def _validate_encoder_checkpoint_load(missing, unexpected):
+    """Reject partial RETFound encoder loads.
+
+    A missing encoder tensor would otherwise retain a random initialization
+    while ``strict=False`` allowed training to continue unnoticed.
+    """
+    missing = list(missing)
+    unexpected = list(unexpected)
+    if missing or unexpected:
+        raise RuntimeError(
+            "RETFound encoder checkpoint is incompatible; refusing to train "
+            "with partially loaded or random encoder weights. "
+            f"Missing keys: {missing or 'none'}. "
+            f"Unexpected keys: {unexpected or 'none'}. "
+            "Use the official RETFound OCT MAE checkpoint downloaded by "
+            "setup_retfound.py."
+        )
+
+
 def build_retfound_vit(checkpoint_path=None) -> RETFoundViT:
     """
     Instantiate RETFound ViT-Large.
 
     If *checkpoint_path* is given the pretrained weights are loaded.
     MAE decoder weights (keys starting with ``decoder_`` or
-    ``mask_token``) are silently dropped; remaining mismatches are
-    reported via ``strict=False`` and printed to stdout.
+    ``mask_token``) are dropped. Any remaining mismatch is treated as an
+    incompatible encoder checkpoint and raises before training can start.
     """
     model = RETFoundViT(
         img_size=224,
@@ -221,11 +240,12 @@ def build_retfound_vit(checkpoint_path=None) -> RETFoundViT:
             if not k.startswith("decoder") and k != "mask_token"
         }
         msg = model.load_state_dict(encoder_sd, strict=False)
-        missing = [k for k in msg.missing_keys if "decoder" not in k]
-        print("  Weights loaded successfully.", flush=True)
-        if missing:
-            print(f"  Missing keys after loading: {missing}", flush=True)
-        if msg.unexpected_keys:
-            print(f"  Unexpected keys (ignored): {len(msg.unexpected_keys)} decoder keys dropped.", flush=True)
+        missing = list(msg.missing_keys)
+        unexpected = list(msg.unexpected_keys)
+        _validate_encoder_checkpoint_load(missing, unexpected)
+        print(
+            f"  Encoder weights loaded successfully ({len(encoder_sd)} tensors).",
+            flush=True,
+        )
 
     return model

@@ -62,6 +62,19 @@ class TestRETFoundViT:
         model = RETFoundViT()
         assert not model.pos_embed.requires_grad
 
+    def test_incomplete_checkpoint_is_rejected(self):
+        from retfound_vit import _validate_encoder_checkpoint_load
+
+        with pytest.raises(RuntimeError, match="partially loaded"):
+            _validate_encoder_checkpoint_load(
+                missing=['blocks.0.norm1.weight'], unexpected=[])
+
+        with pytest.raises(RuntimeError, match="Unexpected keys"):
+            _validate_encoder_checkpoint_load(
+                missing=[], unexpected=['wrong_encoder.weight'])
+
+        _validate_encoder_checkpoint_load(missing=[], unexpected=[])
+
 
 # ---------------------------------------------------------------------------
 # RETFoundSeg tests
@@ -124,6 +137,25 @@ class TestRETFoundSeg:
             p.grad for p in model.decoder.parameters() if p.grad is not None
         ]
         assert len(decoder_grads) > 0, "No gradients in decoder"
+
+    def test_freeze_encoder_blocks(self):
+        """Plain RETFound uses the same 21/24 block policy as RFA."""
+        from retfound_model import RETFoundSeg
+        model = RETFoundSeg(num_classes=2, checkpoint_path=None)
+        model.freeze_encoder_blocks(21)
+
+        assert all(
+            not parameter.requires_grad
+            for block in model.encoder.blocks[:21]
+            for parameter in block.parameters()
+        )
+        assert all(
+            parameter.requires_grad
+            for block in model.encoder.blocks[21:]
+            for parameter in block.parameters()
+        )
+        assert all(parameter.requires_grad
+                   for parameter in model.decoder.parameters())
 
     def test_no_nan_in_output(self):
         from retfound_model import RETFoundSeg

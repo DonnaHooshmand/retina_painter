@@ -65,6 +65,24 @@ def _seed_worker(_worker_id):
     random.seed(worker_seed)
 
 
+def build_optimizer(model, model_type):
+    """Create the model-family optimizer used by the painter workflow.
+
+    Both RETFound decoders use the same partial encoder fine-tuning and AdamW
+    settings. Keeping this policy shared prevents a plain-vs-RFA comparison
+    from also changing the optimizer or number of trainable encoder blocks.
+    """
+    if model_type in ('retfound', 'retfound_rfa'):
+        inner = model.module if hasattr(model, 'module') else model
+        inner.freeze_encoder_blocks(21)
+        trainable = [parameter for parameter in model.parameters()
+                     if parameter.requires_grad]
+        return torch.optim.AdamW(trainable, lr=1e-4, weight_decay=1e-4)
+
+    return torch.optim.SGD(model.parameters(), lr=0.01,
+                           momentum=0.99, nesterov=True)
+
+
 class Trainer():
 
     def __init__(self, sync_dir=None, patch_size=572,
@@ -338,21 +356,7 @@ class Trainer():
                 self.model = create_first_model_with_random_weights(
                     model_dir, model_type=self.model_type)
 
-            if self.model_type == 'retfound_rfa':
-                # Freeze first 21 of 24 encoder blocks per RFA-U-Net paper;
-                # only last 3 blocks + decoder are trained.
-                inner = (self.model.module
-                         if hasattr(self.model, 'module') else self.model)
-                inner.freeze_encoder_blocks(21)
-                trainable = [p for p in self.model.parameters() if p.requires_grad]
-                self.optimizer = torch.optim.AdamW(trainable, lr=1e-4,
-                                                   weight_decay=1e-4)
-            elif self.model_type == 'fundusegmenter':
-                self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01,
-                                                 momentum=0.99, nesterov=True)
-            else:
-                self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01,
-                                                 momentum=0.99, nesterov=True)
+            self.optimizer = build_optimizer(self.model, self.model_type)
             self.model.train()
             self.training = True
 

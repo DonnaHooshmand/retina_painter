@@ -23,13 +23,14 @@ import tempfile
 import shutil
 
 import pytest
+import torch
 
 # Add trainer/src to sys.path so we can import the project modules
 test_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.join(os.path.dirname(test_dir), 'src')
 sys.path.insert(0, src_dir)
 
-from trainer import Trainer
+from trainer import Trainer, build_optimizer
 
 
 @pytest.fixture
@@ -170,3 +171,50 @@ def test_apply_model_type_fundusegmenter(sync_dir):
     assert t.model_type == 'fundusegmenter'
     assert t.in_w == 572
     assert t.out_w == 500
+
+
+class _TinyRETFound(torch.nn.Module):
+    """Small stand-in that exposes the RETFound freezing contract."""
+
+    def __init__(self):
+        super().__init__()
+        self.frozen = None
+        self.early = torch.nn.Linear(2, 2)
+        self.late = torch.nn.Linear(2, 2)
+
+    def freeze_encoder_blocks(self, num_blocks):
+        self.frozen = num_blocks
+        for parameter in self.early.parameters():
+            parameter.requires_grad = False
+
+
+@pytest.mark.parametrize('model_type', ['retfound', 'retfound_rfa'])
+@pytest.mark.parametrize('wrapped', [False, True])
+def test_retfound_variants_share_optimizer_and_freezing(model_type, wrapped):
+    inner = _TinyRETFound()
+    model = torch.nn.DataParallel(inner) if wrapped else inner
+
+    optimizer = build_optimizer(model, model_type)
+
+    assert isinstance(optimizer, torch.optim.AdamW)
+    assert inner.frozen == 21
+    assert optimizer.defaults['lr'] == pytest.approx(1e-4)
+    assert optimizer.defaults['weight_decay'] == pytest.approx(1e-4)
+    optimized = {
+        id(parameter)
+        for group in optimizer.param_groups
+        for parameter in group['params']
+    }
+    assert all(id(parameter) not in optimized
+               for parameter in inner.early.parameters())
+    assert all(id(parameter) in optimized
+               for parameter in inner.late.parameters())
+
+
+def test_unet_keeps_inherited_sgd_optimizer():
+    model = torch.nn.Linear(2, 2)
+
+    optimizer = build_optimizer(model, 'unet')
+
+    assert isinstance(optimizer, torch.optim.SGD)
+    assert optimizer.defaults['lr'] == pytest.approx(0.01)

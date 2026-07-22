@@ -14,7 +14,7 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 - **Foundation model backbone** — The U-Net is replaced with RETFound ViT-Large, a Vision Transformer pre-trained via masked autoencoder self-supervision on 1.6M unlabeled retinal images. Two segmentation heads are available, selected from a dropdown in the **New Project** dialog:
   - **U-Net (original RootPainter)** — scratch-trained U-Net with Group Normalization, unchanged from RootPainter.
-  - **RETFound + plain decoder** — plain 4-stage transposed-convolution decoder on top of the RETFound ViT encoder (the encoder is fine-tuned, not frozen). Trained with the inherited combined Dice/CE loss and SGD.
+  - **RETFound + plain decoder** — plain 4-stage transposed-convolution decoder on top of the RETFound ViT encoder. It uses combined Dice/CE, freezes the first 21 of 24 encoder blocks, and trains the remaining blocks + decoder with AdamW.
   - **RETFound + RFA-U-Net (recommended)** — **RFA-U-Net decoder**: uses four intermediate ViT feature maps (Z6, Z12, Z18, Z24) as U-Net-style skip connections, each passed through a progressive upsampling pyramid and fused via additive attention gates. Achieves Dice 95.04% / Jaccard 90.59% on choroid segmentation vs. all CNN and SOTA baselines (Hayati et al., 2025). Uses the same combined Dice/CE loss as every other painter-selectable model, freezes the first 21 of 24 encoder blocks, and trains the remaining blocks + decoder with AdamW.
 
 - **Parameter-efficient fine-tuning (planned)** — LoRA adapter layers will be injected into the ViT encoder so that each interactive training step updates only a small fraction of parameters, enabling near-real-time model updates on a desktop GPU.
@@ -134,7 +134,7 @@ The `--model-type` CLI arg still exists as a server-side default (useful when th
 
 **Early stopping:** training currently stops after a number of validation epochs with no improvement in continuous masked soft-Dice loss. The default patience is 60 epochs; raise it for hard, slow-to-converge biomarkers with `--max-epochs-without-progress N` (e.g. `--max-epochs-without-progress 120`). Checkpoint selection currently uses masked pixel F1. These are internal training mechanisms inherited from the segmentation workflow; they are not the clinical endpoint. Clinical model comparison uses patient-separated B-scan RIPL detection.
 
-**`retfound_rfa` vs `retfound`:** Both use the same encoder weights, 224×224 tiles, and combined Dice/CE loss by default. `retfound_rfa` adds a U-Net decoder with skip connections from four intermediate ViT layers and attention gates, and trains with AdamW. It achieves better boundary precision at the cost of slightly higher memory.
+**`retfound_rfa` vs `retfound`:** Both use the same encoder weights, 224×224 tiles, combined Dice/CE loss, 21/24-block freezing policy, and AdamW settings. `retfound_rfa` adds a U-Net decoder with skip connections from four intermediate ViT layers and attention gates. Keeping the training policy shared makes the comparison primarily a decoder comparison; RFA costs slightly more memory.
 
 **Loss behavior:** `--loss-type auto` is the front-end default and resolves to the inherited combined Dice/CE loss for every model. Choosing a model in the New Project dialog therefore changes the architecture without silently changing the loss. Tversky remains available only as an explicit developer-side ablation through `--loss-type tversky`; use a separate fresh project for it.
 

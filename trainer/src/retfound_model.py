@@ -176,6 +176,19 @@ class RETFoundSeg(nn.Module):
         """Rescale [0, 1] tiles to ImageNet-normalised values."""
         return (x - self._imagenet_mean) / self._imagenet_std
 
+    def freeze_encoder_blocks(self, num_blocks: int) -> None:
+        """Freeze the first ``num_blocks`` RETFound transformer blocks.
+
+        Plain RETFound and RETFound-RFA use the same partial fine-tuning
+        policy so their comparison isolates the decoder architecture. The
+        decoder and remaining encoder blocks stay trainable.
+        """
+        num_blocks = max(0, min(int(num_blocks), len(self.encoder.blocks)))
+        for i, block in enumerate(self.encoder.blocks):
+            requires_grad = i >= num_blocks
+            for parameter in block.parameters():
+                parameter.requires_grad = requires_grad
+
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

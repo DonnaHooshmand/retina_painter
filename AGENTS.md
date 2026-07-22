@@ -66,6 +66,11 @@ Defined across two files:
 **Loss** (`loss.py`): RootPainter's combined Dice + 0.3 Cross-Entropy objective,
 with untouched pixels masked inside the loss.
 
+**Fine-tuning and optimizer:** The first 21 of 24 encoder blocks are frozen.
+The remaining encoder blocks + decoder use AdamW (`lr=1e-4`,
+`weight_decay=1e-4`). These settings intentionally match `retfound_rfa` so a
+plain-vs-RFA run primarily compares decoder architecture.
+
 ### RETFound + RFA-U-Net decoder (`--model-type retfound_rfa`)
 
 Implements the architecture from Hayati et al. (2025) — *RFA-U-Net: A Foundation Model-Driven Approach for Accurate Choroid Segmentation in OCT Imaging* (medRxiv 2025.05.03.25326923). Reference implementation: https://github.com/Alirezahayatimedtech/RFA-U-Net
@@ -89,7 +94,7 @@ Each skip connection passes through an `_AttentionGate` (additive attention: Wg 
 
 **Loss** (`loss.py`): RootPainter's combined Dice + 0.3 Cross-Entropy objective, with untouched pixels masked inside the loss. This is the painter-facing default for every model so model selection does not silently change the optimization objective. Tversky remains available only through an explicit `--loss-type tversky` ablation.
 
-**Optimizer**: AdamW (lr=1e-4, weight_decay=1e-4) applied to trainable params only (frozen blocks excluded). `retfound` continues to use SGD.
+**Optimizer**: AdamW (lr=1e-4, weight_decay=1e-4) applied to trainable params only (frozen blocks excluded). Plain `retfound` uses the same optimizer and 21/24-block freezing policy for a controlled decoder comparison.
 
 **RETFound weight notes (shared by both retfound variants):**
 - The checkpoint is a full MAE checkpoint (~3.95 GB), not just encoder weights
@@ -171,7 +176,7 @@ Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
 ## Testing
 
-Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 67 tests; runtime depends heavily on the available accelerator.
+Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 74 tests; runtime depends heavily on the available accelerator.
 
 ```bash
 cd trainer/tests
@@ -194,7 +199,7 @@ python -m pytest test_training.py -v -s
 ```
 
 **Coverage:**
-- `test_retfound.py` (12 tests) — ViT token shape, `RETFoundSeg` forward pass shape, softmax correctness, gradient flow through decoder, and a tiling smoke test.
+- `test_retfound.py` (14 tests) — ViT token shape, `RETFoundSeg` forward pass shape, strict checkpoint compatibility, softmax correctness, gradient flow, 21/24-block encoder freezing, and a tiling smoke test.
 - `test_retfound_rfa.py` (18 tests) — `forward_multi_features` shape, `RETFoundSegRFA` forward pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing, Tversky loss properties, and a tiling smoke test.
 - `test_loss_masking.py` (18 tests, Phase 1 + loss routing) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both `combined_loss` and `tversky_loss`; loss is invariant to the amount of untouched canvas; parity with legacy unmasked loss when mask is all-1s; model families route to their intended objectives; and explicit loss overrides work for controlled ablations.
 
