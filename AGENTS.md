@@ -12,18 +12,18 @@ The key departure from RootPainter is the model backend: instead of a U-Net trai
 
 **Two independent Python applications:**
 
-- **`painter/`** — PyQt5 desktop GUI. Users annotate images with brush strokes, view model predictions as overlays, and manage projects/datasets. Entry point: `painter/src/main/python/main.py`. Main window class: `root_painter.py`. **Unchanged from RootPainter.**
+- **`painter/`** — PyQt5 desktop GUI. Users annotate images with brush strokes, view model predictions as overlays, and manage projects/datasets. Entry point: `painter/src/main/python/main.py`. Main window class: `retina_painter.py`. It retains RootPainter's corrective workflow but adds model selection and reproducible trial controls.
 - **`trainer/`** — PyTorch training server. Watches the sync directory for instructions, trains models, performs segmentation. Entry point: `trainer/src/main.py`. Core loop: `trainer.py` (`Trainer.main_loop()`).
 
 **Filesystem-based IPC:** The client writes JSON instruction files to `<syncdir>/instructions/`. The trainer polls for these, processes them (train, segment, etc.), and writes segmentation results back to the project directory. The `instructions.py` module in the painter handles creating these files.
 
 **Workstation mode:** `server_manager.py` in the painter can auto-launch a bundled trainer executable, or in dev mode, launch the trainer from `trainer/env/bin/python`.
 
-**Annotation routing — train vs. validation:** New annotations created in the painter are saved to either `<project>/annotations/train/` or `<project>/annotations/val/` based on a 5:1 file-count ratio (`get_new_annot_target_dir` in [painter/src/main/python/file_utils.py:73](painter/src/main/python/file_utils.py:73)). The router has **no awareness of patient ID or any other grouping** — it routes purely by maintaining the count ratio. For research projects with patient-level data leakage concerns (e.g. retinal OCT, where the same patient's scans look very similar), the default router can scramble an externally-prepared patient-level split, putting the same patient's images in both `train/` and `val/` and making the val-F1 early-stopping signal over-optimistic.
+**Annotation routing — train vs. validation:** New projects pre-assign every seeded filename to a fixed 5:1 train/validation split before annotation begins (`fixed_train_val_split` in `project_order.py`). The `.seg_proj` stores `train_file_names` and `val_file_names`; blank scans or model-dependent corrections cannot shift later filenames between splits. Projects created before this change omit those lists and retain the inherited count-based router. Existing pre-populated annotations are always overwritten in place, preserving externally prepared splits.
 
-**Reproducible annotation order:** The New Project dialog has an **Image order seed** (default `0`). `create_project.py` sorts the dataset filenames, shuffles them with a local seeded RNG, stores both `image_order_seed` and the resulting `file_names` list in the `.seg_proj`, and navigation follows that stored list. Use the same fixed dataset and seed for matched model trials. This setting controls the B-scans presented to the annotator; a trainer seed does not.
+**Reproducible trial seed:** The New Project dialog has a **Trial seed** (default `0`). For new projects this single value fixes navigation order, filename-level train/validation membership, random model/decoder initialization, DataLoader ordering, worker RNGs, and Python/NumPy/PyTorch sampling. Training filenames are sorted before random selection so filesystem order cannot change seeded trials. Exact bitwise equality is only expected on the same software/hardware stack.
 
-Two workarounds today, with a planned permanent fix:
+The fixed seeded split is per-file and still has **no patient-group awareness**. For patient-separated research splits:
 - **Pre-populate empty annotation PNGs** at the correct train/val location before opening the painter. The painter's `get_annot_path` ([file_utils.py:58](painter/src/main/python/file_utils.py:58)) finds the existing file and `maybe_save_annotation` overwrites in place, never invoking the 5:1 router. The `prepare_annotations.py` script in the user's data-prep tooling does this.
 - **Manually move files** between `annotations/train/` and `annotations/val/` after sessions to enforce the desired split.
 - **Planned: explicit train/val source folders** — see the `train-val-split` branch. A "New Project" checkbox lets the user point at separate train and val image directories so the painter routes annotations by source folder rather than by count. Eliminates the workaround entirely.
@@ -40,11 +40,12 @@ accuracy, and accuracy. Pixel Dice/IoU are secondary engineering diagnostics
 only and must not be the headline basis for choosing an architecture.
 
 Do not confuse the clinical endpoint with the training surrogate. The trainer
-currently uses masked pixel losses, masked pixel F1 for checkpoint selection,
-and masked soft-Dice loss for early stopping. This remains the current
-implementation until a patient-separated detection validation manifest and
-evaluator exist. Sparse corrective annotations are not exhaustive and cannot
-be used to calculate honest B-scan false negatives or true negatives.
+uses masked combined Dice + 0.3 cross-entropy for optimization, checkpoint
+promotion, and early stopping. Hard masked pixel F1 remains diagnostic only;
+it cannot block checkpoint updates while a tiny lesion is still below the 0.5
+threshold. Background-only validation uses the CE term and emits a warning.
+Sparse corrective annotations are not exhaustive and cannot calculate honest
+B-scan false negatives or true negatives.
 
 If individual lesions are evaluated later, use one-to-one lesion matching and
 report lesion TP/FP/FN, sensitivity, precision, and false positives per B-scan;
@@ -55,6 +56,8 @@ lesion-level TN is undefined.
 ### U-Net (original, `--model-type unet`, default)
 
 Defined in `unet.py` (`UNetGNRes`). Uses Group Normalization (not Batch Norm) with residual connections. Default input patch size 572×572, output 500×500 (valid convolutions crop 36px per side). Valid patch sizes: 572, 556, 540, ..., 28.
+
+**Training sampler:** `TrainDataset` retains RootPainter's inherited minimum of 612 randomly generated crops per epoch. Each sample chooses a training annotation file and then a random crop containing at least one explicitly supervised pixel in the model's output region. For U-Net this prevents an annotation in the discarded 36-pixel context border from admitting a zero-supervision crop. Sampling is not yet foreground/background-stratified; changing 612 or class balance requires a controlled experiment.
 
 ### RETFound plain decoder (`--model-type retfound`)
 
@@ -176,7 +179,7 @@ Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
 ## Testing
 
-Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 74 tests; runtime depends heavily on the available accelerator.
+Tests are in `trainer/tests/`. Run from that directory. Full fast trainer suite is 83 tests; runtime depends heavily on the available accelerator.
 
 ```bash
 cd trainer/tests
@@ -184,7 +187,8 @@ cd trainer/tests
 # Full unit suite (fast, no downloads)
 python -m pytest test_loss.py test_unet.py test_utils.py test_loss_masking.py \
                   test_retfound.py test_retfound_rfa.py \
-                  test_fundusegmenter.py test_metrics.py test_instructions.py -v
+                  test_fundusegmenter.py test_metrics.py test_instructions.py \
+                  test_training_control.py -v
 
 # Individual files
 python -m pytest test_retfound.py -v          # RETFound plain decoder
@@ -202,6 +206,7 @@ python -m pytest test_training.py -v -s
 - `test_retfound.py` (14 tests) — ViT token shape, `RETFoundSeg` forward pass shape, strict checkpoint compatibility, softmax correctness, gradient flow, 21/24-block encoder freezing, and a tiling smoke test.
 - `test_retfound_rfa.py` (18 tests) — `forward_multi_features` shape, `RETFoundSegRFA` forward pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing, Tversky loss properties, and a tiling smoke test.
 - `test_loss_masking.py` (18 tests, Phase 1 + loss routing) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both `combined_loss` and `tversky_loss`; loss is invariant to the amount of untouched canvas; parity with legacy unmasked loss when mask is all-1s; model families route to their intended objectives; and explicit loss overrides work for controlled ablations.
+- `test_training_control.py` (8 tests) — trial seeding, RNG isolation, continuous-loss checkpoint promotion while hard F1 remains zero, background-only validation, and U-Net discarded-border supervision.
 
 **End-to-end smoke scripts** (not collected by pytest, run manually):
 - `smoke_phase1.py` — UNet integration: 30-step training run, legacy-vs-fixed loss comparison across untouched-fraction settings, gradient isolation. Runs in ~30s on CPU.
@@ -255,7 +260,8 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 - Python 3.11–3.12 required (`>=3.11,<3.13`)
 - Trainer imports are relative (e.g., `from unet import ...`), not package-qualified — tests and entry points run from `trainer/src/`
 - Batch size is auto-detected from GPU memory (CUDA/MPS/CPU fallback); retfound uses 1.5 GB/item estimate vs. 3.8 GB/item for unet
-- The painter and JSON instruction format are **unchanged** — all RetinaPainter changes are trainer-side only
+- Painter instructions remain filesystem JSON, with optional `model_type`, `model_seed`, and `training_seed` fields for new projects; older instructions remain supported.
+- `Trainer.fix_config_paths` must treat `model_type` as an identifier, not a path. If it is path-prefixed, `_build_model` silently falls back to U-Net even when the painter selected a RETFound model.
 - `model_type` must be propagated through every model-loading call: `load_model`, `create_first_model_with_random_weights`, `ensemble_segment`, and `get_prev_model`. Omitting it silently loads a UNet instead of RETFound. This applies to all three values: `'unet'`, `'retfound'`, `'retfound_rfa'`.
 - `retfound` and `retfound_rfa` produce **incompatible checkpoints** (different decoder state_dict keys). Never load a `retfound` `.pkl` with `--model-type retfound_rfa` or vice versa — it will silently produce a shape mismatch or wrong architecture.
 - When `in_w == out_w` (RETFound), `tile_pad = 0`. Guard any annotation crop with `if tile_pad > 0:` — Python's `x[0:-0]` is `x[0:0]` (empty), not a no-op.

@@ -12,18 +12,18 @@ The key departure from RootPainter is the model backend: instead of a U-Net trai
 
 **Two independent Python applications:**
 
-- **`painter/`** — PyQt5 desktop GUI. Users annotate images with brush strokes, view model predictions as overlays, and manage projects/datasets. Entry point: `painter/src/main/python/main.py`. Main window class: `root_painter.py`. **Unchanged from RootPainter.**
+- **`painter/`** — PyQt5 desktop GUI. Users annotate images with brush strokes, view model predictions as overlays, and manage projects/datasets. Entry point: `painter/src/main/python/main.py`. Main window class: `retina_painter.py`. It retains RootPainter's corrective workflow but adds model selection and reproducible trial controls.
 - **`trainer/`** — PyTorch training server. Watches the sync directory for instructions, trains models, performs segmentation. Entry point: `trainer/src/main.py`. Core loop: `trainer.py` (`Trainer.main_loop()`).
 
 **Filesystem-based IPC:** The client writes JSON instruction files to `<syncdir>/instructions/`. The trainer polls for these, processes them (train, segment, etc.), and writes segmentation results back to the project directory. The `instructions.py` module in the painter handles creating these files.
 
 **Workstation mode:** `server_manager.py` in the painter can auto-launch a bundled trainer executable, or in dev mode, launch the trainer from `trainer/env/bin/python`.
 
-**Annotation routing — train vs. validation:** New annotations created in the painter are saved to either `<project>/annotations/train/` or `<project>/annotations/val/` based on a 5:1 file-count ratio (`get_new_annot_target_dir` in [painter/src/main/python/file_utils.py:73](painter/src/main/python/file_utils.py:73)). The router has **no awareness of patient ID or any other grouping** — it routes purely by maintaining the count ratio. For research projects with patient-level data leakage concerns (e.g. retinal OCT, where the same patient's scans look very similar), the default router can scramble an externally-prepared patient-level split, putting the same patient's images in both `train/` and `val/` and making the val-F1 early-stopping signal over-optimistic.
+**Annotation routing — train vs. validation:** New projects pre-assign every seeded filename to a fixed 5:1 train/validation split before annotation begins (`fixed_train_val_split` in `project_order.py`). The `.seg_proj` stores `train_file_names` and `val_file_names`; blank scans or model-dependent corrections cannot shift later filenames between splits. Projects created before this change omit those lists and retain the inherited count-based router. Existing pre-populated annotations are always overwritten in place, preserving externally prepared splits.
 
-**Reproducible annotation order:** The New Project dialog has an **Image order seed** (default `0`). `create_project.py` sorts the dataset filenames, shuffles them with a local seeded RNG, stores both `image_order_seed` and the resulting `file_names` list in the `.seg_proj`, and navigation follows that stored list. Use the same fixed dataset and seed for matched model trials. This setting controls the B-scans presented to the annotator; a trainer seed does not.
+**Reproducible trial seed:** The New Project dialog has a **Trial seed** (default `0`). For new projects this single value fixes navigation order, filename-level train/validation membership, random model/decoder initialization, DataLoader ordering, worker RNGs, and Python/NumPy/PyTorch sampling. Training filenames are sorted before random selection so filesystem order cannot change seeded trials. Exact bitwise equality is only expected on the same software/hardware stack.
 
-Two workarounds today, with a planned permanent fix:
+The fixed seeded split is per-file and still has **no patient-group awareness**. For patient-separated research splits:
 - **Pre-populate empty annotation PNGs** at the correct train/val location before opening the painter. The painter's `get_annot_path` ([file_utils.py:58](painter/src/main/python/file_utils.py:58)) finds the existing file and `maybe_save_annotation` overwrites in place, never invoking the 5:1 router. The `prepare_annotations.py` script in the user's data-prep tooling does this.
 - **Manually move files** between `annotations/train/` and `annotations/val/` after sessions to enforce the desired split.
 - **Planned: explicit train/val source folders** — see the `train-val-split` branch. A "New Project" checkbox lets the user point at separate train and val image directories so the painter routes annotations by source folder rather than by count. Eliminates the workaround entirely.
@@ -35,6 +35,8 @@ This concern only affects the **internal validation signal during training** (mo
 ### U-Net (original, `--model-type unet`, default)
 
 Defined in `unet.py` (`UNetGNRes`). Uses Group Normalization (not Batch Norm) with residual connections. Default input patch size 572×572, output 500×500 (valid convolutions crop 36px per side). Valid patch sizes: 572, 556, 540, ..., 28.
+
+**Training sampler:** `TrainDataset` retains RootPainter's inherited minimum of 612 randomly generated crops per epoch. Each sample chooses a training annotation file and then a random crop containing at least one explicitly supervised pixel in the model's output region. For U-Net this prevents an annotation in the discarded 36-pixel context border from admitting a zero-supervision crop. Sampling is not yet foreground/background-stratified; changing 612 or class balance requires a controlled experiment.
 
 ### RETFound plain decoder (`--model-type retfound`)
 
@@ -83,9 +85,9 @@ Each skip connection passes through an `_AttentionGate` (additive attention: Wg 
 
 Each epoch, `Trainer.validation()` ([trainer.py](trainer/src/trainer.py)) evaluates the current model on `annotations/val/` and decides both *which* checkpoint to keep and *when* to stop.
 
-- **Model selection is F1-based.** `save_if_better` writes a new checkpoint only when the current model's validation **F1** beats the previous best. The model used for segmentation is always the best-F1 checkpoint.
-- **Early stopping is driven by a continuous validation loss, not F1.** `get_val_metrics` ([model_utils.py](trainer/src/model_utils.py)) computes `loss = 1 - (masked soft Dice)` between the predicted foreground probability and the label over supervised pixels. The "epochs without progress" counter resets when this val loss reaches a new minimum (by at least `min_val_loss_delta = 1e-4`) and increments otherwise. Training stops after `max_epochs_without_progress` epochs with no val-loss improvement.
-- **Why not stop on F1?** On rare biomarkers, hard F1 can sit at 0 for many epochs while the model is still genuinely learning (val loss falling). Gating early stopping on F1 — as the original RootPainter code did — could end training before the first true positive ever appears. Relatedly, `get_metrics` now returns 0.0 (not NaN) when there are no true positives, so all comparisons stay well-defined.
+- **Checkpoint selection and early stopping share one continuous objective.** `get_val_metrics` computes masked combined Dice + 0.3 cross-entropy over explicitly supervised pixels. `save_if_better` promotes a new UI checkpoint when this objective decreases, and the same value drives the "epochs without progress" counter.
+- **Hard pixel F1 is diagnostic only.** On rare biomarkers it can remain 0 while probabilities improve below the 0.5 threshold, or a random fuzzy model can earn a tiny F1 by accidental overlap. It is logged but cannot block checkpoint updates.
+- **Background-only validation remains informative.** When no foreground is currently painted in validation, Dice is undefined, so the CE term selects lower false-positive probability and the trainer emits a warning. This is an internal fallback, not a substitute for a patient-separated positive validation set.
 - **Configurable patience:** `--max-epochs-without-progress` (default 60) on `main.py` / `start-trainer`. The counter and `best_val_loss` also reset whenever annotations change.
 
 This logic governs only the *internal* validation signal; the held-out test set is a separate physical folder (see Architecture) and is unaffected.
@@ -162,7 +164,7 @@ Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
 ## Testing
 
-Tests are in `trainer/tests/`. Run from that directory. Full unit suite is 74 tests; runtime depends heavily on the available accelerator.
+Tests are in `trainer/tests/`. Run from that directory. Full fast trainer suite is 83 tests; runtime depends heavily on the available accelerator.
 
 ```bash
 cd trainer/tests
@@ -171,7 +173,7 @@ cd trainer/tests
 # (test_utils.py is a shared helper module, not a test file)
 python -m pytest test_loss.py test_unet.py test_metrics.py test_loss_masking.py \
                   test_retfound.py test_retfound_rfa.py test_fundusegmenter.py \
-                  test_instructions.py -v
+                  test_instructions.py test_training_control.py -v
 
 # Individual files
 python -m pytest test_retfound.py -v          # RETFound plain decoder
@@ -191,6 +193,7 @@ python -m pytest test_training.py -v -s
 - `test_loss_masking.py` (18 tests, Phase 1 + loss routing) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both losses; the loss is invariant to untouched-canvas size; fully defined masks match legacy unmasked behavior; each model family routes to its intended objective; and explicit loss overrides work for controlled ablations.
 - `test_fundusegmenter.py` (4 tests) — FunduSegmenter import, forward-pass shape (572→500, identical to UNet), no-NaN output, and `_build_model('fundusegmenter')` routing. (FunduSegmenter is currently a UNet placeholder — see Models.)
 - `test_metrics.py` (5 tests) — `get_metrics` returns 0.0 (not NaN) when there are no true positives, does not divide by zero when no pixels are defined, and passes the validation loss through.
+- `test_training_control.py` (8 tests) — trial seeding, RNG isolation, continuous-loss checkpoint promotion while hard F1 remains zero, background-only validation, and U-Net discarded-border supervision.
 
 **End-to-end smoke scripts** (not collected by pytest, run manually):
 - `smoke_phase1.py` — UNet integration: 30-step training run, legacy-vs-fixed loss comparison across untouched-fraction settings, gradient isolation. Runs in ~30s on CPU.
@@ -244,7 +247,8 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 - Python 3.11–3.12 required (`>=3.11,<3.13`)
 - Trainer imports are relative (e.g., `from unet import ...`), not package-qualified — tests and entry points run from `trainer/src/`
 - Batch size is auto-detected from GPU memory (CUDA/MPS/CPU fallback); retfound uses 1.5 GB/item estimate vs. 3.8 GB/item for unet
-- The painter and JSON instruction format are **unchanged** — all RetinaPainter changes are trainer-side only
+- Painter instructions remain filesystem JSON, with optional `model_type`, `model_seed`, and `training_seed` fields for new projects; older instructions remain supported.
+- `Trainer.fix_config_paths` must treat `model_type` as an identifier, not a path. If it is path-prefixed, `_build_model` silently falls back to U-Net even when the painter selected a RETFound model.
 - `model_type` must be propagated through every model-loading call: `load_model`, `create_first_model_with_random_weights`, `ensemble_segment`, and `get_prev_model`. Omitting it silently loads a UNet instead of RETFound. This applies to all three values: `'unet'`, `'retfound'`, `'retfound_rfa'`.
 - `retfound` and `retfound_rfa` produce **incompatible checkpoints** (different decoder state_dict keys). Never load a `retfound` `.pkl` with `--model-type retfound_rfa` or vice versa — it will silently produce a shape mismatch or wrong architecture.
 - When `in_w == out_w` (RETFound), `tile_pad = 0`. Guard any annotation crop with `if tile_pad > 0:` — Python's `x[0:-0]` is `x[0:0]` (empty), not a no-op.
@@ -257,7 +261,7 @@ A review pass over the model/loss/training code produced these fixes, covered by
 
 - **Loss routing is centralized in `loss.training_loss`.** `auto` resolves to RootPainter's `combined_loss` (Dice + 0.3·CE) for every model so the front-end model selector changes only the architecture.
 - **`--loss-type {auto,combined,tversky}` supports controlled ablations.** Tversky requires an explicit override. Changing the loss does not change checkpoint structure, but separate fresh project copies are required for interpretable comparisons.
-- **Early stopping reworked** — model selection stays F1-based, but the *stop* signal is now a continuous validation loss (`1 - masked soft Dice`) instead of "F1 didn't improve". Prevents premature stops on rare lesions where F1 sits at 0 during warmup. See **Validation & Early Stopping**. New `--max-epochs-without-progress` CLI flag (default 60) on `main.py` + `src/__init__.py`.
+- **Checkpoint selection and early stopping aligned** — both use masked combined Dice + 0.3 CE. Hard F1 is diagnostic only, and background-only validation falls back to CE with a warning. This prevents the UI from remaining stuck on a random fuzzy checkpoint while probabilities improve below 0.5.
 - **`get_metrics` returns 0.0 (not NaN) when there are no true positives**, and guards every `/ total` division against `total == 0` (no more crash on an empty val tile). `metrics.py`.
 - **`train_one_epoch` photo guard fixed** — `if not [is_photo(a) for a in ls(d)]` (truthy unless the dir is empty) → `if not any(is_photo(a) ...)`. `trainer.py`.
 - **DataLoader workers re-seed NumPy** via `worker_init_fn=_seed_worker`, so `np.random`-based augmentations (Gaussian noise, salt-and-pepper) are no longer duplicated across workers. `trainer.py`.

@@ -9,12 +9,14 @@ Tests for the RetinaPainter trainer (the PyTorch server). Run from this director
 source ../env/bin/activate          # macOS / Linux
 # or: ..\env\Scripts\activate       # Windows PowerShell
 
-# Full unit suite — fast, no downloads, ~80s on CPU
+# Full unit suite — no downloads; ViT tests dominate CPU runtime
 python -m pytest test_loss.py test_unet.py test_utils.py test_loss_masking.py \
-                  test_retfound.py test_retfound_rfa.py -v
+                  test_retfound.py test_retfound_rfa.py test_instructions.py \
+                  test_metrics.py test_fundusegmenter.py \
+                  test_training_control.py -v
 ```
 
-Expected: **44 passed**.
+Expected: **83 passed**.
 
 A single test:
 
@@ -31,7 +33,10 @@ python -m pytest test_loss_masking.py::test_combined_loss_zero_grad_on_untouched
 | `test_loss_masking.py` | 18 | **Sparse-supervision masking + loss routing.** Locks in the contract that untouched pixels contribute **zero loss-value sensitivity** and **zero gradient** for both `combined_loss` and `tversky_loss`, and that extra untouched canvas cannot dilute the supervised objective. Includes parity tests, all-untouched-tile handling, default model-to-loss routing, and explicit loss-override checks for controlled ablations. |
 | `test_retfound.py` | 14 | RETFound plain-decoder model (`--model-type retfound`): ViT token shape, `RETFoundSeg` forward-pass shape, strict checkpoint compatibility, gradient flow, 21/24-block encoder freezing, and a tiling smoke test that runs `unet_segment` on a synthetic 512×512 image. |
 | `test_retfound_rfa.py` | 18 | RETFound + RFA-U-Net attention decoder (`--model-type retfound_rfa`): `forward_multi_features` shape, `RETFoundSegRFA` forward-pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing (`freeze_encoder_blocks(21)`), Tversky-loss properties, and a tiling smoke test. |
-| `test_instructions.py` | 10 | Painter→trainer instruction retry handling, model-type switching, and optimizer routing. Confirms both RETFound decoders, including DataParallel-wrapped production models, use identical 21/24-block freezing and AdamW settings while U-Net retains its inherited SGD optimizer. |
+| `test_instructions.py` | 11 | Painter→trainer instruction retry handling, UI model-type preservation, model switching, and optimizer routing. Confirms both RETFound decoders, including DataParallel-wrapped production models, use identical 21/24-block freezing and AdamW settings while U-Net retains its inherited SGD optimizer. |
+| `test_metrics.py` | 5 | Metric edge cases, including no true positives, no defined pixels, and validation-loss passthrough. |
+| `test_fundusegmenter.py` | 4 | Placeholder model construction, shape, finite output, and factory routing. |
+| `test_training_control.py` | 8 | Trial seeding and RNG isolation, continuous-loss checkpoint promotion below the hard-F1 threshold, background-only validation, and U-Net context-border supervision. |
 | `test_utils.py` | (helpers) | Not a test file — shared utilities (`get_acc`, etc.) imported by the others. Pytest collects no tests here. |
 
 ## End-to-end smoke scripts

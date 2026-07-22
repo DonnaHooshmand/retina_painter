@@ -41,6 +41,13 @@ from file_utils import ls
 import im_utils
 import elastic
 
+
+def annotation_output_region(annot_tile, tile_pad):
+    """Return the annotation pixels that the model can actually supervise."""
+    if tile_pad > 0:
+        return annot_tile[tile_pad:-tile_pad, tile_pad:-tile_pad]
+    return annot_tile
+
 def elastic_transform(photo, annot):
     def_map = elastic.get_elastic_map(photo.shape,
                                       scale=random.random(),
@@ -138,7 +145,10 @@ class TrainDataset(Dataset):
             y_in = math.floor(random.random() * bottom_lim)
             annot_tile = padded_annot[y_in:y_in+self.in_w,
                                       x_in:x_in+self.in_w]
-            if np.sum(annot_tile) > 0:
+            # U-Net predicts only the central 500 pixels of a 572-pixel
+            # input. Do not accept a crop merely because its annotation lies
+            # in the 36-pixel context border that is removed before loss.
+            if np.sum(annotation_output_region(annot_tile, tile_pad)) > 0:
                 break
 
         im_tile = padded_im[y_in:y_in+self.in_w,

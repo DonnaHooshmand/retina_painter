@@ -29,7 +29,7 @@ from im_utils import is_image
 import file_utils
 from name_edit_widget import NameEditWidget
 from palette import PaletteEditWidget
-from project_order import seeded_file_order
+from project_order import fixed_train_val_split, seeded_file_order
 
 class CreateProjectWidget(QtWidgets.QWidget):
 
@@ -80,15 +80,15 @@ class CreateProjectWidget(QtWidgets.QWidget):
         seed_layout.setContentsMargins(0, 0, 0, 0)
         seed_widget.setLayout(seed_layout)
 
-        seed_label = QtWidgets.QLabel("Image order seed:")
+        seed_label = QtWidgets.QLabel("Trial seed:")
         seed_layout.addWidget(seed_label)
 
         self.image_order_seed_spin = QtWidgets.QSpinBox()
         self.image_order_seed_spin.setRange(0, 2_147_483_647)
         self.image_order_seed_spin.setValue(self.image_order_seed)
         self.image_order_seed_spin.setToolTip(
-            "Projects created from the same dataset with the same seed show "
-            "images in the same order."
+            "For new projects, the seed fixes image order, train/validation "
+            "assignment, model initialization, and training sampling."
         )
         self.image_order_seed_spin.valueChanged.connect(
             self.on_image_order_seed_changed)
@@ -96,7 +96,8 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.layout.addWidget(seed_widget)
 
         seed_hint = QtWidgets.QLabel(
-            "Use the same seed for matched U-Net, RETFound, and RFA trials."
+            "Use the same dataset and seed for matched U-Net, RETFound, and "
+            "RFA trials."
         )
         seed_hint.setWordWrap(True)
         self.layout.addWidget(seed_hint)
@@ -316,12 +317,15 @@ class CreateProjectWidget(QtWidgets.QWidget):
                             'models' / model_name)
             original_model_file = self.selected_model
 
-        # Store a reproducible navigation order for annotation.
+        # Store a reproducible navigation order and pre-assign every filename
+        # to train or validation. The assignment must not depend on whether a
+        # particular model happened to need a correction on an earlier scan.
         all_fnames = file_utils.ls(dataset_path)
         # images only
         all_fnames = [a for a in all_fnames if is_image(a)]
 
         all_fnames = seeded_file_order(all_fnames, self.image_order_seed)
+        train_fnames, val_fnames = fixed_train_val_split(all_fnames)
 
         dataset_abs_path = os.path.abspath(dataset_path)
         datasets_abs_path = os.path.abspath(os.path.join(self.sync_dir, 'datasets'))
@@ -337,6 +341,10 @@ class CreateProjectWidget(QtWidgets.QWidget):
             'location': str(PurePosixPath(project_location)),
             'file_names': all_fnames,
             'image_order_seed': self.image_order_seed,
+            'training_seed': self.image_order_seed,
+            'train_file_names': train_fnames,
+            'val_file_names': val_fnames,
+            'split_method': 'seeded_order_5_train_to_1_val_v1',
             'model_type': self.model_type
         }
         # 'classes': self.palette_edit_widget.get_brush_data()

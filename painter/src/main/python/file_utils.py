@@ -89,9 +89,28 @@ def get_new_annot_target_dir(train_annot_dir, val_annot_dir):
     return train_annot_dir
 
 
+def resolve_new_annot_target_dir(train_annot_dir, val_annot_dir,
+                                 fixed_target_dir=None):
+    """Resolve a new annotation's destination with fixed-split validation."""
+    if fixed_target_dir is None:
+        return get_new_annot_target_dir(train_annot_dir, val_annot_dir)
+
+    valid_targets = {
+        os.path.abspath(str(train_annot_dir)),
+        os.path.abspath(str(val_annot_dir)),
+    }
+    annot_dir = os.path.abspath(str(fixed_target_dir))
+    if annot_dir not in valid_targets:
+        raise ValueError(
+            f"Fixed annotation target is not train or val: {annot_dir}"
+        )
+    return annot_dir
+
+
 #pylint: disable=R0913 # Too many arguments
 def maybe_save_annotation(proj_location, annot_pixmap, annot_path, png_fname,
-                          train_annot_dir, val_annot_dir):
+                          train_annot_dir, val_annot_dir,
+                          fixed_target_dir=None):
     # First save to project folder as temp file.
     temp_out = os.path.join(proj_location, 'temp_annot.png')
     annot_pixmap.save(temp_out, 'PNG')
@@ -107,8 +126,11 @@ def maybe_save_annotation(proj_location, annot_pixmap, annot_path, png_fname,
         # if there is not an existing annotation
         # and the annotation has some content
         if np.sum(imread(temp_out)):
-            # then find the best place to put it based on current counts.
-            annot_dir = get_new_annot_target_dir(train_annot_dir, val_annot_dir)
+            # New projects pre-assign each filename to train/validation from
+            # the seeded image order. Older projects have no fixed target and
+            # retain the inherited count-based routing behavior.
+            annot_dir = resolve_new_annot_target_dir(
+                train_annot_dir, val_annot_dir, fixed_target_dir)
             annot_path = os.path.join(annot_dir, png_fname)
             annot_pixmap.save(annot_path, 'PNG')
         else:

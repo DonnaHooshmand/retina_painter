@@ -164,6 +164,8 @@ class Trainer():
 
         print('Batch size', self.bs)
         self.optimizer = None
+        self.training_seed = None
+        self.data_generator = None
         # used to check for updates
         self.annot_mtimes = []
         self.msg_dir = None
@@ -177,11 +179,34 @@ class Trainer():
         # improvement that counts as progress (guards against val noise).
         self.best_val_loss = float('inf')
         self.min_val_loss_delta = 1e-4
+        self.warned_no_val_foreground = False
         # These can be trigged by data sent from client
         self.valid_instructions = [self.start_training,
                                    self.segment,
                                    self.stop_training,
                                    self.trainer_status]
+
+    def configure_training_seed(self, seed):
+        """Seed training randomness and create an independent loader RNG."""
+        if seed is None:
+            self.training_seed = None
+            self.data_generator = None
+            return
+
+        seed = int(seed)
+        self.training_seed = seed
+        random.seed(seed)
+        np.random.seed(seed % (2 ** 32))
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
+        self.data_generator = torch.Generator()
+        self.data_generator.manual_seed(seed)
+        message = f'Training seed: {seed}'
+        print(message, flush=True)
+        self.log(message)
 
     def main_loop(self):
         print('Started main loop. Checking for instructions in',
@@ -204,9 +229,10 @@ class Trainer():
     def fix_config_paths(self, old_config):
         """ get paths relative to local machine """
         new_config = {}
+        non_path_keys = {'file_names', 'format', 'model_type'}
         for k, v in old_config.items():
-            if k == 'file_names' or k == 'format':
-                # names and format specified dont need a path appending
+            if k in non_path_keys:
+                # Identifiers, filenames, and output formats are not paths.
                 new_config[k] = v
             elif isinstance(v, list):
                 # if its a list fix each string in the list.
@@ -289,6 +315,7 @@ class Trainer():
             "model_type": self.model_type,
             "loss_type": resolve_training_loss_type(
                 self.model_type, self.loss_type),
+            "training_seed": self.training_seed,
         }
         if self.training and self.train_config:
             # Include the project being trained so the painter can inform the user
@@ -333,6 +360,7 @@ class Trainer():
         if not self.training:
             if 'model_type' in config:
                 self.apply_model_type(config['model_type'])
+            self.configure_training_seed(config.get('training_seed'))
             self.train_config = config
             self.epochs_without_progress = 0
             self.best_val_loss = float('inf')
@@ -354,7 +382,8 @@ class Trainer():
                                                     model_type=self.model_type)
             else:
                 self.model = create_first_model_with_random_weights(
-                    model_dir, model_type=self.model_type)
+                    model_dir, model_type=self.model_type,
+                    seed=self.training_seed)
 
             self.optimizer = build_optimizer(self.model, self.model_type)
             self.model.train()
@@ -374,6 +403,7 @@ class Trainer():
             self.epochs_without_progress = 0
             # The val set changed, so the previous best val loss is stale.
             self.best_val_loss = float('inf')
+            self.warned_no_val_foreground = False
         self.annot_mtimes = new_annot_mtimes
 
     def write_message(self, message):
@@ -404,6 +434,7 @@ class Trainer():
                                   # and don't go above the number of cpus, provided by cpu_count.
                                   num_workers=self.num_workers,
                                   worker_init_fn=_seed_worker,
+                                  generator=self.data_generator,
                                   drop_last=False, pin_memory=True)
         epoch_start = time.time()
         self.model.train()
@@ -496,15 +527,9 @@ class Trainer():
 
     def validation(self):
         """ Get validation-set metrics for the current and previous model,
-             log them, and save the current model if it has the better
-             validation F1 (model selection stays F1-based).
-
-             Early stopping, however, is driven by the continuous validation
-             loss (masked soft Dice), not F1: on rare biomarkers F1 can sit at
-             0 for many epochs while the model is still learning, so stopping on
-             F1 would end training before the first true positive appears.
-             Training stops after max_epochs_without_progress epochs with no
-             val-loss improvement.
+             log them, and save the current model when its continuous masked
+             validation objective improves. Hard pixel F1 remains diagnostic,
+             but cannot block an early rare-lesion model at F1=0.
         """
         model_dir = self.train_config['model_dir']
         # TODO consider implementing checkpointer class to maintain
@@ -519,11 +544,20 @@ class Trainer():
         prev_metrics = get_val_metrics(prev_model)
         self.log_metrics('cur_val', cur_metrics)
         self.log_metrics('prev_val', prev_metrics)
-        save_if_better(model_dir, self.model, prev_path,
-                       cur_metrics['f1'], prev_metrics['f1'])
-        # Model selection stays F1-based (save_if_better above). Early stopping
-        # is driven by the continuous validation loss so we don't terminate
-        # during the early phase where F1 is still 0 but the model is learning.
+        print('prev f1', str(round(prev_metrics['f1'], 5)).ljust(7, '0'),
+              'cur f1', str(round(cur_metrics['f1'], 5)).ljust(7, '0'),
+              '(diagnostic only)')
+        saved_path = save_if_better(
+            model_dir, self.model, prev_path,
+            cur_metrics['loss'], prev_metrics['loss'])
+        ui_checkpoint = saved_path or prev_path
+        checkpoint_message = (
+            f'UI checkpoint: {os.path.basename(ui_checkpoint)}')
+        print(checkpoint_message, flush=True)
+        self.log(checkpoint_message)
+
+        # Early stopping uses the same continuous objective as checkpoint
+        # promotion so the progress message and the UI model cannot disagree.
         cur_val_loss = cur_metrics['loss']
         if cur_val_loss < self.best_val_loss - self.min_val_loss_delta:
             self.best_val_loss = cur_val_loss
@@ -532,6 +566,18 @@ class Trainer():
             self.epochs_without_progress += 1
 
         self.reset_progress_if_annots_changed()
+
+        if cur_metrics['foreground_defined'] == 0:
+            if not self.warned_no_val_foreground:
+                warning = ('Warning validation annotations contain no '
+                           'foreground; checkpoint selection is using '
+                           'background cross-entropy only')
+                print(warning, flush=True)
+                self.log(warning)
+                self.write_message(warning)
+                self.warned_no_val_foreground = True
+        else:
+            self.warned_no_val_foreground = False
 
         message = (f'Training {self.epochs_without_progress}'
                    f' of max {self.max_epochs_without_progress}'
@@ -599,7 +645,9 @@ class Trainer():
             if not model_paths:
                 print(f'No existing model — creating first model with random weights ({self.model_type})...', flush=True)
                 create_first_model_with_random_weights(model_dir,
-                                                       model_type=self.model_type)
+                                                       model_type=self.model_type,
+                                                       seed=segment_config.get(
+                                                           'model_seed'))
                 model_paths = model_utils.get_latest_model_paths(model_dir, 1)
         print(f'Segmenting {len(fnames)} image(s) using {len(model_paths)} model(s).', flush=True)
         start = time.time()

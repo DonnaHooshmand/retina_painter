@@ -66,8 +66,7 @@ def load_train_image_and_annot(dataset_dir, train_annot_dir):
             latest_im_path = None
 
             # This might take ages, profile and optimize
-            fnames = ls(train_annot_dir)
-            fnames = [a for a in fnames if is_photo(a)]
+            fnames = sorted(a for a in ls(train_annot_dir) if is_photo(a))
             fname = random.sample(fnames, 1)[0]
             annot_path = os.path.join(train_annot_dir, fname)
             image_path_part = os.path.join(dataset_dir,

@@ -25,6 +25,10 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 - **Annotation semantics: sparse corrective supervision** — Pixels the clinician paints as foreground or background are supervised; untouched pixels are treated as unknown and excluded from the loss with zero gradient and zero loss-value contribution. Earlier RootPainter code zeroed the logits at untouched pixels but did not actually exclude them from loss—every untouched pixel added a constant CE penalty, slowing training. RetinaPainter's masked loss fixes this. A future `unsure` annotation category is planned for explicitly ambiguous regions (blurry imagery, hard lesion edges)—also masked from loss but retained as metadata for curriculum learning and uncertainty evaluation. A dense corrected-target alternative remains a possible future research direction but is not the current contract.
 
+- **Reproducible model trials** — The New Project **Trial seed** fixes image order, the filename-level 5:1 train/validation split, random model/decoder initialization, and training-data RNGs. New projects store the split in the `.seg_proj`, so blank scans or model-dependent corrections cannot shift later images between train and validation. The automatic split is per-file, not patient-aware; use an externally prepared patient-level split for research evaluation.
+
+- **Rare-lesion checkpoint control** — UI checkpoints and early stopping use the continuous masked combined Dice + 0.3 CE objective. Hard pixel F1 remains diagnostic, but cannot leave the UI stuck on a random fuzzy checkpoint while RIPL probabilities are improving below 0.5. Background-only validation uses CE and emits a warning.
+
 - **Detection-first clinical evaluation** — The primary RIPL endpoint is whether a held-out OCT B-scan contains at least one RIPL. Models are compared using the B-scan confusion matrix and sensitivity, specificity, PPV, NPV, and balanced accuracy. Pixel Dice/IoU are secondary training and localization diagnostics, not measures of clinical success.
 
 ### Roadmap
@@ -132,13 +136,13 @@ start-trainer --syncdir /path/to/sync_dir
 
 The `--model-type` CLI arg still exists as a server-side default (useful when the trainer is started independently and the painter has not yet sent a project instruction), but it is not normally needed.
 
-**Early stopping:** training currently stops after a number of validation epochs with no improvement in continuous masked soft-Dice loss. The default patience is 60 epochs; raise it for hard, slow-to-converge biomarkers with `--max-epochs-without-progress N` (e.g. `--max-epochs-without-progress 120`). Checkpoint selection currently uses masked pixel F1. These are internal training mechanisms inherited from the segmentation workflow; they are not the clinical endpoint. Clinical model comparison uses patient-separated B-scan RIPL detection.
+**Checkpoint selection and early stopping:** both use continuous masked combined Dice + 0.3 CE. The default patience is 60 epochs; raise it for hard, slow-to-converge biomarkers with `--max-epochs-without-progress N` (e.g. `--max-epochs-without-progress 120`). Hard pixel F1 is logged as a diagnostic but cannot block UI checkpoint updates. These are internal training mechanisms, not the clinical endpoint. Clinical model comparison uses patient-separated B-scan RIPL detection.
 
 **`retfound_rfa` vs `retfound`:** Both use the same encoder weights, 224×224 tiles, combined Dice/CE loss, 21/24-block freezing policy, and AdamW settings. `retfound_rfa` adds a U-Net decoder with skip connections from four intermediate ViT layers and attention gates. Keeping the training policy shared makes the comparison primarily a decoder comparison; RFA costs slightly more memory.
 
 **Loss behavior:** `--loss-type auto` is the front-end default and resolves to the inherited combined Dice/CE loss for every model. Choosing a model in the New Project dialog therefore changes the architecture without silently changing the loss. Tversky remains available only as an explicit developer-side ablation through `--loss-type tversky`; use a separate fresh project for it.
 
-**Matched model trials:** The New Project dialog includes an **Image order seed** (default `0`). Projects created from the same dataset with the same seed store the same deterministic `file_names` order, so **Save & Next** presents identical B-scan sequences for U-Net, RETFound, and RFA trials. This is a painter-project setting, not a trainer flag. Keep the dataset fixed during the comparison.
+**Matched model trials:** The New Project dialog includes a **Trial seed** (default `0`). With the same fixed dataset, it reproduces navigation order, filename-level train/validation membership, model/decoder initialization, and training RNGs for U-Net, RETFound, and RFA trials. The painter sends it to the trainer automatically; no trainer flag is required.
 
 **First-run note:** Loading the RETFound checkpoint (~3.95 GB) takes 2–5 minutes on both backends. Progress prints appear in the terminal. The first segmentation after startup also loads the model from disk, so expect a similar wait before the first overlay appears.
 
@@ -167,6 +171,9 @@ python -m pytest test_retfound_rfa.py -v
 
 # FunduSegmenter placeholder + metrics tests
 python -m pytest test_fundusegmenter.py test_metrics.py -v
+
+# Reproducible split/seed, checkpoint promotion, and U-Net crop controls
+python -m pytest test_training_control.py -v
 
 # Existing unit tests (loss, unet, utilities)
 python -m pytest test_loss.py test_unet.py test_utils.py -v

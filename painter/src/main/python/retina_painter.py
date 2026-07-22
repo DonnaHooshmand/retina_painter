@@ -228,6 +228,20 @@ class RetinaPainter(QtWidgets.QMainWindow):
         # None means the project was created before the model-type dropdown;
         # instructions will omit model_type so the trainer keeps its CLI default.
         self.model_type = settings.get('model_type', None)
+        self.training_seed = settings.get(
+            'training_seed', settings.get('image_order_seed', None))
+        # Projects created before fixed splitting omit these lists and retain
+        # the legacy count-based routing behavior.
+        self.train_file_stems = {
+            os.path.splitext(fname)[0]
+            for fname in settings.get('train_file_names', [])
+        }
+        self.val_file_stems = {
+            os.path.splitext(fname)[0]
+            for fname in settings.get('val_file_names', [])
+        }
+        self.has_fixed_split = (
+            'train_file_names' in settings and 'val_file_names' in settings)
 
         self.proj_file_path = proj_file_path
 
@@ -455,6 +469,8 @@ class RetinaPainter(QtWidgets.QMainWindow):
         }
         if self.model_type is not None:
             content["model_type"] = self.model_type
+        if self.training_seed is not None:
+            content["model_seed"] = self.training_seed
         self.send_instruction('segment', content)
 
     def segment_current_image(self):
@@ -1197,6 +1213,8 @@ class RetinaPainter(QtWidgets.QMainWindow):
         }
         if self.model_type is not None:
             content["model_type"] = self.model_type
+        if self.training_seed is not None:
+            content["training_seed"] = self.training_seed
         self.send_instruction('start_training', content)
 
     def seg_checkbox_change(self, state):
@@ -1374,13 +1392,23 @@ class RetinaPainter(QtWidgets.QMainWindow):
     def save_annotation(self):
         if self.scene.annot_pixmap:
             self.log(f'save_annotation,fname:{self.png_fname}')
+            fixed_target_dir = None
+            if self.has_fixed_split:
+                stem = os.path.splitext(self.png_fname)[0]
+                if stem in self.val_file_stems:
+                    fixed_target_dir = self.val_annot_dir
+                elif stem in self.train_file_stems:
+                    fixed_target_dir = self.train_annot_dir
+                else:
+                    raise ValueError(
+                        f'Image {self.png_fname} is missing from fixed split')
             self.annot_path = maybe_save_annotation(self.proj_location,
                                                     self.scene.annot_pixmap,
                                                     self.annot_path,
                                                     self.png_fname,
                                                     self.train_annot_dir,
-                                                    self.val_annot_dir)
+                                                    self.val_annot_dir,
+                                                    fixed_target_dir)
             self.metrics_plot.add_file_metrics(os.path.basename(self.image_path))
-
 
 

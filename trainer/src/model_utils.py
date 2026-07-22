@@ -20,6 +20,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import os
 import time
 import glob
+from contextlib import contextmanager
 import numpy as np
 import torch
 from torch.nn.functional import softmax
@@ -41,6 +42,22 @@ def get_device():
 
 
 device = get_device() # used in epoch function etc.
+
+
+@contextmanager
+def seeded_torch_rng(seed):
+    """Temporarily seed CPU model initialization without perturbing training.
+
+    Models are constructed on CPU, so preserving/restoring the CPU RNG is
+    sufficient here. Data sampling uses a separate trainer-owned generator.
+    """
+    if seed is None:
+        yield
+        return
+
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(int(seed))
+        yield
 
 def get_latest_model_paths(model_dir, k):
     fnames = ls(model_dir)
@@ -77,7 +94,8 @@ def load_model(model_path, model_type='unet'):
     print(f'Model loaded and moved to {device}.', flush=True)
     return model
 
-def create_first_model_with_random_weights(model_dir, model_type='unet'):
+def create_first_model_with_random_weights(model_dir, model_type='unet',
+                                           seed=None):
     """
     Create a model with initial weights and save it to *model_dir*.
 
@@ -85,29 +103,30 @@ def create_first_model_with_random_weights(model_dir, model_type='unet'):
     weights (downloaded automatically on first use); the decoder uses random
     weights.  For 'unet', all weights are random.
     """
-    if model_type == 'retfound':
-        from retfound_model import RETFoundSeg, download_retfound_weights
-        print('Initialising RETFound model (this may take a moment on first run)...', flush=True)
-        checkpoint_path = download_retfound_weights()
-        print('Building RETFoundSeg with pretrained encoder...', flush=True)
-        model = RETFoundSeg(num_classes=2, checkpoint_path=checkpoint_path)
-        print('RETFound model ready.', flush=True)
-    elif model_type == 'retfound_rfa':
-        from retfound_rfa_model import RETFoundSegRFA
-        from retfound_model import download_retfound_weights
-        print('Initialising RETFound-RFA model (this may take a moment on first run)...', flush=True)
-        checkpoint_path = download_retfound_weights()
-        print('Building RETFoundSegRFA with pretrained encoder + RFA-U-Net decoder...', flush=True)
-        model = RETFoundSegRFA(num_classes=2, checkpoint_path=checkpoint_path)
-        print('RETFound-RFA model ready.', flush=True)
-    elif model_type == 'fundusegmenter':
-        from fundusegmenter_model import FunduSegmenter
-        print('Initialising FunduSegmenter (PLACEHOLDER: plain U-Net with random '
-              'weights — no FunduSegmenter pretrained weights are loaded)...', flush=True)
-        model = FunduSegmenter(num_classes=2)
-        print('FunduSegmenter (U-Net placeholder) ready.', flush=True)
-    else:
-        model = UNetGNRes()
+    with seeded_torch_rng(seed):
+        if model_type == 'retfound':
+            from retfound_model import RETFoundSeg, download_retfound_weights
+            print('Initialising RETFound model (this may take a moment on first run)...', flush=True)
+            checkpoint_path = download_retfound_weights()
+            print('Building RETFoundSeg with pretrained encoder...', flush=True)
+            model = RETFoundSeg(num_classes=2, checkpoint_path=checkpoint_path)
+            print('RETFound model ready.', flush=True)
+        elif model_type == 'retfound_rfa':
+            from retfound_rfa_model import RETFoundSegRFA
+            from retfound_model import download_retfound_weights
+            print('Initialising RETFound-RFA model (this may take a moment on first run)...', flush=True)
+            checkpoint_path = download_retfound_weights()
+            print('Building RETFoundSegRFA with pretrained encoder + RFA-U-Net decoder...', flush=True)
+            model = RETFoundSegRFA(num_classes=2, checkpoint_path=checkpoint_path)
+            print('RETFound-RFA model ready.', flush=True)
+        elif model_type == 'fundusegmenter':
+            from fundusegmenter_model import FunduSegmenter
+            print('Initialising FunduSegmenter (PLACEHOLDER: plain U-Net with random '
+                  'weights — no FunduSegmenter pretrained weights are loaded)...', flush=True)
+            model = FunduSegmenter(num_classes=2)
+            print('FunduSegmenter (U-Net placeholder) ready.', flush=True)
+        else:
+            model = UNetGNRes()
 
     model_num = 1
     model_name = str(model_num).zfill(6)
@@ -124,20 +143,35 @@ def get_prev_model(model_dir, model_type='unet'):
     prev_model = load_model(prev_path, model_type=model_type)
     return prev_model, prev_path
 
+
+def combined_validation_loss(soft_inter, soft_pred_sum,
+                             foreground_defined, ce_sum, defined_sum):
+    """Compute combined Dice + 0.3 CE from validation accumulators."""
+    if defined_sum <= 0:
+        return float('inf')
+
+    ce = ce_sum / defined_sum
+    if foreground_defined <= 0:
+        return 0.3 * ce
+
+    soft_denom = soft_pred_sum + foreground_defined
+    dice = ((2.0 * soft_inter / soft_denom)
+            if soft_denom > 0 else 0.0)
+    return (1.0 - dice) + (0.3 * ce)
+
 def get_val_metrics(cnn, val_annot_dir, dataset_dir, in_w, out_w, bs):
     """
     Return validation metrics (TP/FP/TN/FN, F1, etc.) for {cnn} on the
-    validation set, plus a continuous validation ``loss`` = 1 - masked soft
-    Dice between the predicted foreground probability and the foreground label
-    over supervised pixels. Unlike hard F1 — which can sit at 0 for many epochs
-    while a rare-biomarker model is still learning — this loss changes smoothly
-    with progress, so Trainer.validation uses it as the early-stopping signal.
+    validation set, plus the continuous masked Dice + 0.3 CE objective used for
+    checkpoint selection and early stopping. Unlike hard F1 — which can sit at
+    0 while a rare-biomarker model is learning — this loss changes smoothly.
+    Its CE-only fallback also remains informative when the current validation
+    annotations contain background corrections but no foreground.
 
     TODO - This is too similar to the train loop. Merge both and use flags.
     """
     start = time.time()
-    fnames = ls(val_annot_dir)
-    fnames = [a for a in fnames if im_utils.is_photo(a)]
+    fnames = sorted(a for a in ls(val_annot_dir) if im_utils.is_photo(a))
     # TODO: In order to speed things up, be a bit smarter here
     # by only segmenting the parts of the image where we have
     # some annotation defined.
@@ -148,9 +182,12 @@ def get_val_metrics(cnn, val_annot_dir, dataset_dir, in_w, out_w, bs):
     tns = 0
     fns = 0
     defined_sum = 0
-    # Continuous soft-Dice accumulators for a smooth validation loss.
+    # Accumulators for the masked combined validation objective.
     soft_inter = 0.0   # sum of p * y over supervised pixels
-    soft_denom = 0.0   # sum of p + sum of y over supervised pixels
+    soft_pred_sum = 0.0
+    foreground_defined = 0
+    background_defined = 0
+    ce_sum = 0.0
     for fname in fnames:
         annot_path = os.path.join(val_annot_dir,
                                   os.path.splitext(fname)[0] + '.png')
@@ -198,23 +235,33 @@ def get_val_metrics(cnn, val_annot_dir, dataset_dir, in_w, out_w, bs):
         fps += np.sum(np.logical_and(y_pred == 1, y_true == 0))
         fns += np.sum(np.logical_and(y_pred == 0, y_true == 1))
         defined_sum += np.sum(y_defined > 0)
-        # soft-Dice accumulation over supervised pixels (continuous)
+        foreground_defined += int(np.sum(y_true))
+        background_defined += int(len(y_true) - np.sum(y_true))
+        # Soft-Dice and CE accumulation over supervised pixels. Clipping only
+        # protects the logarithm; it does not alter the hard predictions above.
+        clipped_probs = np.clip(probs_def.astype(np.float64), 1e-7, 1 - 1e-7)
         soft_inter += float(np.sum(probs_def * y_true))
-        soft_denom += float(np.sum(probs_def) + np.sum(y_true))
+        soft_pred_sum += float(np.sum(probs_def))
+        ce_sum += float(np.sum(
+            -(y_true * np.log(clipped_probs)
+              + (1 - y_true) * np.log(1 - clipped_probs))))
     duration = round(time.time() - start, 3)
-    # Masked soft Dice → loss in [0, 1]. Undefined when there is no supervised
-    # foreground anywhere in val; report worst-case 1.0 in that case.
-    soft_dice = (2.0 * soft_inter / soft_denom) if soft_denom > 0 else 0.0
-    val_loss = 1.0 - soft_dice
+    # Same fallback as combined_loss: Dice is undefined without supervised
+    # foreground, while background CE remains meaningful.
+    val_loss = combined_validation_loss(
+        soft_inter, soft_pred_sum, foreground_defined, ce_sum, defined_sum)
     metrics = get_metrics(tps, fps, tns, fns, defined_sum, duration,
                           loss=val_loss)
+    metrics['foreground_defined'] = foreground_defined
+    metrics['background_defined'] = background_defined
     return metrics
 
 def save_if_better(model_dir, cur_model, prev_model_path,
-                   cur_f1, prev_f1):
-    print('prev f1', str(round(prev_f1, 5)).ljust(7, '0'),
-          'cur f1', str(round(cur_f1, 5)).ljust(7, '0'))
-    if cur_f1 > prev_f1:
+                   cur_loss, prev_loss):
+    """Save *cur_model* when its continuous validation loss is lower."""
+    print('prev val loss', str(round(prev_loss, 6)).ljust(8, '0'),
+          'cur val loss', str(round(cur_loss, 6)).ljust(8, '0'))
+    if np.isfinite(cur_loss) and cur_loss < prev_loss:
         prev_model_fname = os.path.basename(prev_model_path)
         prev_model_num = int(prev_model_fname.split('_')[0])
         model_num = prev_model_num + 1
@@ -223,8 +270,8 @@ def save_if_better(model_dir, cur_model, prev_model_path,
         model_path = os.path.join(model_dir, model_name)
         print('saving', model_path, time.strftime('%H:%M:%S', time.localtime(now)))
         torch.save(cur_model.state_dict(), model_path)
-        return True
-    return False
+        return model_path
+    return None
 
 def ensemble_segment(model_paths, image, bs, in_w, out_w,
                      threshold=0.5, model_type='unet'):

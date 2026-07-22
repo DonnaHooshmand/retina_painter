@@ -218,3 +218,18 @@ def test_unet_keeps_inherited_sgd_optimizer():
 
     assert isinstance(optimizer, torch.optim.SGD)
     assert optimizer.defaults['lr'] == pytest.approx(0.01)
+
+
+def test_fix_config_paths_preserves_ui_model_type(sync_dir):
+    trainer = create_trainer(sync_dir)
+
+    fixed = trainer.fix_config_paths({
+        'model_type': 'retfound_rfa',
+        'training_seed': 42,
+        'model_dir': 'projects/trial/models',
+    })
+
+    assert fixed['model_type'] == 'retfound_rfa'
+    assert fixed['training_seed'] == 42
+    assert fixed['model_dir'] == os.path.join(
+        sync_dir, 'projects/trial/models')
