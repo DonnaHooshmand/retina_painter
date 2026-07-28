@@ -92,10 +92,13 @@ class Trainer():
                  loss_type='auto',
                  max_epochs_without_progress=60,
                  candidate_rollback_patience=3,
+                 provisional_ui_loss_margin=0.01,
                  ):
 
         if candidate_rollback_patience < 1:
             raise ValueError('candidate_rollback_patience must be at least 1')
+        if provisional_ui_loss_margin < 0:
+            raise ValueError('provisional_ui_loss_margin cannot be negative')
         self.model_type = model_type
         # Validate once at startup; in auto mode the resolved loss follows any
         # later per-project model-type switch from the painter.
@@ -189,6 +192,12 @@ class Trainer():
         # this explicitly provisional warm-up, then switches permanently to
         # durable validation-best checkpoints once foreground is available.
         self.validation_has_foreground = False
+        # A foreground-free validation set cannot assess sensitivity, but it
+        # can identify a candidate that is creating substantially more false
+        # positives. Continue training such a candidate in memory while
+        # withholding it from the painter until it recovers.
+        self.provisional_ui_loss_margin = provisional_ui_loss_margin
+        self.provisional_live_safe = True
         # Best (lowest) validation loss seen this run, plus the smallest
         # improvement that counts as progress (guards against val noise).
         self.best_val_loss = float('inf')
@@ -380,6 +389,7 @@ class Trainer():
             self.epochs_without_progress = 0
             self.candidate_worse_epochs = 0
             self.validation_has_foreground = False
+            self.provisional_live_safe = True
             self.best_val_loss = float('inf')
             self.msg_dir = self.train_config['message_dir']
             model_dir = self.train_config['model_dir']
@@ -580,6 +590,8 @@ class Trainer():
         annotations_changed = self.reset_progress_if_annots_changed()
         self.validation_has_foreground = (
             cur_metrics['foreground_defined'] > 0)
+        self._update_provisional_ui_safety(
+            cur_metrics['loss'], prev_metrics['loss'])
         saved_path = save_if_better(
             model_dir, self.model, prev_path,
             cur_metrics['loss'], prev_metrics['loss'])
@@ -641,6 +653,35 @@ class Trainer():
             self.training = False
             self.write_message(message)
 
+    def _update_provisional_ui_safety(self, cur_loss, ui_loss):
+        """Choose live or checkpoint UI feedback during foreground-free warm-up."""
+        if self.validation_has_foreground:
+            self.provisional_live_safe = False
+            return
+
+        previous_state = self.provisional_live_safe
+        self.provisional_live_safe = bool(
+            np.isfinite(cur_loss)
+            and np.isfinite(ui_loss)
+            and cur_loss <= ui_loss + self.provisional_ui_loss_margin)
+        if self.provisional_live_safe == previous_state:
+            return
+
+        if self.provisional_live_safe:
+            message = (
+                'Provisional live UI enabled: candidate background '
+                f'validation loss {cur_loss:.6f} is within '
+                f'{self.provisional_ui_loss_margin:.6f} of UI loss '
+                f'{ui_loss:.6f}')
+        else:
+            message = (
+                'Provisional live UI withheld: candidate background '
+                f'validation loss {cur_loss:.6f} exceeds UI loss '
+                f'{ui_loss:.6f} + safety margin '
+                f'{self.provisional_ui_loss_margin:.6f}')
+        print(message, flush=True)
+        self.log(message)
+
     def _rollback_worse_candidate(self, cur_loss, ui_loss,
                                   ui_model, ui_checkpoint_path):
         """Restore the stable UI checkpoint after sustained candidate drift."""
@@ -697,6 +738,8 @@ class Trainer():
         if 'model_paths' in segment_config:
             return None
         if getattr(self, 'validation_has_foreground', False):
+            return None
+        if not getattr(self, 'provisional_live_safe', True):
             return None
         if not self.training or self.model is None or not self.train_config:
             return None

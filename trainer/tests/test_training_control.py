@@ -241,6 +241,7 @@ def test_foreground_free_warmup_uses_provisional_live_model(
     trainer.model_type = 'unet'
     trainer.model = torch.nn.Linear(2, 2)
     trainer.validation_has_foreground = False
+    trainer.provisional_live_safe = True
     model_dir = tmp_path / 'project' / 'models'
     trainer.train_config = {'model_dir': str(model_dir)}
     calls = []
@@ -261,6 +262,62 @@ def test_foreground_free_warmup_uses_provisional_live_model(
         'file_names': ['scan.png'],
     })
     assert calls == [(None, trainer.model)]
+
+
+def test_background_regression_withholds_provisional_live_model(
+        tmp_path, monkeypatch):
+    trainer = object.__new__(Trainer)
+    trainer.sync_dir = str(tmp_path)
+    trainer.training = True
+    trainer.model_type = 'unet'
+    trainer.model = torch.nn.Linear(2, 2)
+    trainer.validation_has_foreground = False
+    trainer.provisional_live_safe = False
+    model_dir = tmp_path / 'project' / 'models'
+    trainer.train_config = {'model_dir': str(model_dir)}
+    best_path = str(model_dir / '000006_best.pkl')
+    calls = []
+
+    monkeypatch.setattr(
+        model_utils, 'get_latest_model_paths',
+        lambda _model_dir, _count: [best_path])
+    monkeypatch.setattr(
+        trainer, 'segment_file',
+        lambda _in, _out, _fname, paths, _format, live_model=None:
+        calls.append((paths, live_model)))
+    trainer.segment({
+        'dataset_dir': str(tmp_path / 'dataset'),
+        'seg_dir': str(tmp_path / 'segmentations'),
+        'model_dir': str(model_dir),
+        'model_type': 'unet',
+        'file_names': ['scan.png'],
+    })
+    assert calls == [([best_path], None)]
+
+
+def test_provisional_live_safety_uses_absolute_background_loss_margin():
+    trainer = object.__new__(Trainer)
+    trainer.validation_has_foreground = False
+    trainer.provisional_ui_loss_margin = 0.01
+    trainer.provisional_live_safe = True
+    messages = []
+    trainer.log = messages.append
+
+    trainer._update_provisional_ui_safety(cur_loss=0.016, ui_loss=0.007)
+    assert trainer.provisional_live_safe
+    assert messages == []
+
+    trainer._update_provisional_ui_safety(cur_loss=0.018, ui_loss=0.007)
+    assert not trainer.provisional_live_safe
+    assert 'Provisional live UI withheld' in messages[-1]
+
+    trainer._update_provisional_ui_safety(cur_loss=0.012, ui_loss=0.007)
+    assert trainer.provisional_live_safe
+    assert 'Provisional live UI enabled' in messages[-1]
+
+    trainer.validation_has_foreground = True
+    trainer._update_provisional_ui_safety(cur_loss=0.001, ui_loss=0.007)
+    assert not trainer.provisional_live_safe
 
 
 def test_segment_falls_back_to_saved_checkpoint_when_not_training(
