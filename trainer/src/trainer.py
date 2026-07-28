@@ -418,7 +418,6 @@ class Trainer():
         if new_annot_mtimes != self.annot_mtimes:
             print('reset epochs without progress as annotations have changed')
             self.epochs_without_progress = 0
-            self.candidate_worse_epochs = 0
             # The val set changed, so the previous best val loss is stale.
             self.best_val_loss = float('inf')
             self.warned_no_val_foreground = False
@@ -602,9 +601,10 @@ class Trainer():
         self.log(checkpoint_message)
 
         # Checkpoint promotion, automatic rollback, and early stopping all use
-        # the same continuous objective. A changed annotation set receives one
-        # grace epoch because its new objective is not comparable to the prior
-        # epoch's counter.
+        # the same continuous objective. Annotation updates reset only the
+        # early-stopping counter. Candidate and UI checkpoint are both
+        # re-evaluated on the same current validation set, so their regression
+        # comparison remains valid across those updates.
         if saved_path:
             self.best_val_loss = cur_metrics['loss']
             self.epochs_without_progress = 0
@@ -613,7 +613,7 @@ class Trainer():
 
         self._rollback_worse_candidate(
             cur_metrics['loss'], prev_metrics['loss'],
-            annotations_changed, prev_model, prev_path)
+            prev_model, prev_path)
 
         if cur_metrics['foreground_defined'] == 0:
             if not self.warned_no_val_foreground:
@@ -642,11 +642,16 @@ class Trainer():
             self.write_message(message)
 
     def _rollback_worse_candidate(self, cur_loss, ui_loss,
-                                  annotations_changed,
                                   ui_model, ui_checkpoint_path):
         """Restore the stable UI checkpoint after sustained candidate drift."""
-        if annotations_changed or not (
-                np.isfinite(cur_loss) and np.isfinite(ui_loss)):
+        # Background-only validation can assess false-positive suppression but
+        # cannot assess RIPL sensitivity. It may provisionally promote a
+        # checkpoint during cold start, but must not discard a candidate that
+        # is beginning to learn foreground.
+        if not self.validation_has_foreground:
+            self.candidate_worse_epochs = 0
+            return False
+        if not (np.isfinite(cur_loss) and np.isfinite(ui_loss)):
             self.candidate_worse_epochs = 0
             return False
 

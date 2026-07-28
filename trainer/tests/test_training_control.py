@@ -332,6 +332,7 @@ def test_candidate_rolls_back_after_consecutive_worse_epochs(
     trainer.min_val_loss_delta = 1e-4
     trainer.candidate_rollback_patience = 3
     trainer.candidate_worse_epochs = 0
+    trainer.validation_has_foreground = True
     trainer.log = lambda _message: None
     trainer.write_message = lambda _message: None
     ui_model = torch.nn.Linear(2, 2)
@@ -342,12 +343,12 @@ def test_candidate_rolls_back_after_consecutive_worse_epochs(
 
     for _ in range(2):
         assert not trainer._rollback_worse_candidate(
-            cur_loss=1.0, ui_loss=0.5, annotations_changed=False,
+            cur_loss=1.0, ui_loss=0.5,
             ui_model=ui_model, ui_checkpoint_path='000013_best.pkl')
         assert trainer.model is not ui_model
 
     assert trainer._rollback_worse_candidate(
-        cur_loss=1.0, ui_loss=0.5, annotations_changed=False,
+        cur_loss=1.0, ui_loss=0.5,
         ui_model=ui_model, ui_checkpoint_path='000013_best.pkl')
     assert trainer.model is ui_model
     assert trainer.optimizer is rebuilt_optimizer
@@ -355,19 +356,42 @@ def test_candidate_rolls_back_after_consecutive_worse_epochs(
     assert trainer.candidate_worse_epochs == 0
 
 
-def test_annotation_change_gives_candidate_rollback_grace_epoch(tmp_path):
+def test_background_only_validation_never_rolls_back_candidate(tmp_path):
     trainer = object.__new__(Trainer)
     trainer.model_type = 'unet'
     trainer.model = torch.nn.Linear(2, 2)
     trainer.min_val_loss_delta = 1e-4
     trainer.candidate_rollback_patience = 1
-    trainer.candidate_worse_epochs = 0
+    trainer.candidate_worse_epochs = 4
+    trainer.validation_has_foreground = False
 
     assert not trainer._rollback_worse_candidate(
-        cur_loss=1.0, ui_loss=0.5, annotations_changed=True,
+        cur_loss=1.0, ui_loss=0.5,
         ui_model=torch.nn.Linear(2, 2),
         ui_checkpoint_path=str(tmp_path / 'best.pkl'))
     assert trainer.candidate_worse_epochs == 0
+
+
+def test_annotation_change_preserves_candidate_regression_counter(tmp_path):
+    trainer = object.__new__(Trainer)
+    train_dir = tmp_path / 'train'
+    val_dir = tmp_path / 'val'
+    train_dir.mkdir()
+    val_dir.mkdir()
+    (train_dir / 'new_annotation.png').touch()
+    trainer.train_config = {
+        'train_annot_dir': str(train_dir),
+        'val_annot_dir': str(val_dir),
+    }
+    trainer.annot_mtimes = []
+    trainer.epochs_without_progress = 7
+    trainer.candidate_worse_epochs = 2
+    trainer.best_val_loss = 0.25
+    trainer.warned_no_val_foreground = True
+
+    assert trainer.reset_progress_if_annots_changed()
+    assert trainer.epochs_without_progress == 0
+    assert trainer.candidate_worse_epochs == 2
 
 
 @pytest.mark.parametrize('was_training', [True, False])
