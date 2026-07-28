@@ -418,6 +418,15 @@ class Trainer():
         if not any(is_photo(a) for a in ls(val_annot_dir)):
             return
 
+        if self.train_set.refresh_annotation_pools():
+            sampler_message = (
+                'Training sampler: '
+                f'{len(self.train_set.foreground_fnames)} foreground-bearing, '
+                f'{len(self.train_set.background_fnames)} background-bearing '
+                'annotation(s); foreground tile target '
+                f'{self.train_set.foreground_tile_fraction:.0%}')
+            print(sampler_message, flush=True)
+            self.log(sampler_message)
 
         device = model_utils.get_device()
 

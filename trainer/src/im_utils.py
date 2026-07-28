@@ -47,7 +47,7 @@ def normalize_tile(tile):
     assert np.max(tile) <= 1, f"tile max {np.max(tile)}"
     return tile
 
-def load_train_image_and_annot(dataset_dir, train_annot_dir):
+def load_train_image_and_annot(dataset_dir, train_annot_dir, fnames=None):
     max_attempts = 60
     attempts = 0
     # used for logging which file caused the problem.
@@ -66,8 +66,15 @@ def load_train_image_and_annot(dataset_dir, train_annot_dir):
             latest_im_path = None
 
             # This might take ages, profile and optimize
-            fnames = sorted(a for a in ls(train_annot_dir) if is_photo(a))
-            fname = random.sample(fnames, 1)[0]
+            if fnames is None:
+                available_fnames = sorted(
+                    a for a in ls(train_annot_dir) if is_photo(a))
+            else:
+                # Dataset sampling policies may provide a foreground- or
+                # background-bearing pool. Sort it here so the trial seed, not
+                # filesystem enumeration order, determines the selection.
+                available_fnames = sorted(fnames)
+            fname = random.sample(available_fnames, 1)[0]
             annot_path = os.path.join(train_annot_dir, fname)
             image_path_part = os.path.join(dataset_dir,
                                            os.path.splitext(fname)[0])

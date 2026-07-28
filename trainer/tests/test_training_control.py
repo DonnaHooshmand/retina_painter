@@ -8,13 +8,15 @@ import sys
 import numpy as np
 import pytest
 import torch
+from PIL import Image
 
 
 test_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.join(os.path.dirname(test_dir), 'src')
 sys.path.insert(0, src_dir)
 
-from datasets import annotation_output_region
+import datasets
+from datasets import TrainDataset, annotation_output_region
 import model_utils
 from model_utils import (combined_validation_loss, save_if_better,
                          seeded_torch_rng)
@@ -129,6 +131,65 @@ def test_retfound_has_no_discarded_annotation_border():
     annot = np.zeros((224, 224, 2), dtype=np.uint8)
     annot[0, 0, 0] = 1
     assert annotation_output_region(annot, tile_pad=0).sum() == 1
+
+
+def _write_correction(path, channel):
+    annot = np.zeros((4, 4, 3), dtype=np.uint8)
+    annot[:, :, channel] = 255
+    Image.fromarray(annot).save(path)
+
+
+def test_train_dataset_balances_correction_types_reproducibly(
+        tmp_path, monkeypatch):
+    annot_dir = tmp_path / 'annotations'
+    annot_dir.mkdir()
+    _write_correction(annot_dir / 'foreground.png', channel=0)
+    _write_correction(annot_dir / 'background.png', channel=1)
+
+    def fake_load(_dataset_dir, _annot_dir, fnames=None):
+        fname = random.sample(sorted(fnames), 1)[0]
+        annot = np.zeros((4, 4, 2), dtype=bool)
+        annot[:, :, 0 if fname == 'foreground.png' else 1] = True
+        return np.zeros((4, 4, 3), dtype=np.uint8), annot, fname
+
+    monkeypatch.setattr(datasets, 'load_train_image_and_annot', fake_load)
+    train_set = TrainDataset(
+        str(annot_dir), str(tmp_path / 'images'), in_w=4, out_w=4,
+        min_epoch_tiles=200, foreground_tile_fraction=0.5)
+    train_set.augmentor.transform = lambda photo, annot: (photo, annot)
+
+    def draw_sequence():
+        random.seed(123)
+        return [int(train_set[index][1].sum() > 0)
+                for index in range(200)]
+
+    first = draw_sequence()
+    second = draw_sequence()
+    assert first == second
+    assert 80 <= sum(first) <= 120
+
+
+def test_train_dataset_falls_back_when_no_foreground_exists(
+        tmp_path, monkeypatch):
+    annot_dir = tmp_path / 'annotations'
+    annot_dir.mkdir()
+    _write_correction(annot_dir / 'background.png', channel=1)
+
+    def fake_load(_dataset_dir, _annot_dir, fnames=None):
+        assert fnames == ['background.png']
+        annot = np.zeros((4, 4, 2), dtype=bool)
+        annot[:, :, 1] = True
+        return np.zeros((4, 4, 3), dtype=np.uint8), annot, fnames[0]
+
+    monkeypatch.setattr(datasets, 'load_train_image_and_annot', fake_load)
+    train_set = TrainDataset(
+        str(annot_dir), str(tmp_path / 'images'), in_w=4, out_w=4,
+        foreground_tile_fraction=0.5)
+    train_set.augmentor.transform = lambda photo, annot: (photo, annot)
+
+    _, foreground, mask = train_set[0]
+    assert foreground.sum() == 0
+    assert mask.sum() > 0
 
 
 def test_same_project_segment_uses_live_training_model(tmp_path, monkeypatch):

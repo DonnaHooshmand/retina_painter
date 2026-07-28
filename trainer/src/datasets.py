@@ -103,24 +103,87 @@ class UNetTransformer():
 
 class TrainDataset(Dataset):
     def __init__(self, train_annot_dir, dataset_dir, in_w, out_w,
-                 min_epoch_tiles=612):
+                 min_epoch_tiles=612, foreground_tile_fraction=0.5):
         """
         in_w and out_w are the tile size in pixels
         min_epoch_tiles: minimum number of samples per epoch
+        foreground_tile_fraction: target fraction of samples drawn from an
+            annotation/crop containing explicit foreground supervision
         """
+        if not 0 <= foreground_tile_fraction <= 1:
+            raise ValueError('foreground_tile_fraction must be in [0, 1]')
         self.in_w = in_w
         self.out_w = out_w
         self.train_annot_dir = train_annot_dir
         self.dataset_dir = dataset_dir
         self.augmentor = UNetTransformer()
         self.min_epoch_tiles = min_epoch_tiles
+        self.foreground_tile_fraction = foreground_tile_fraction
+        self.foreground_fnames = []
+        self.background_fnames = []
+        self.refresh_annotation_pools()
 
     def __len__(self):
         return max(self.min_epoch_tiles, len(ls(self.train_annot_dir)) * 2)
 
+    def refresh_annotation_pools(self):
+        """Refresh foreground/background-bearing annotation filename pools.
+
+        The raw image collection need not be labelled or class-balanced.
+        Pools are built only from sparse corrections that already exist, and
+        filenames may belong to both pools when an annotation contains both
+        red foreground and green background strokes.
+        """
+        foreground_fnames = []
+        background_fnames = []
+        fnames = sorted(
+            fname for fname in ls(self.train_annot_dir)
+            if im_utils.is_photo(fname))
+        for fname in fnames:
+            annot_path = os.path.join(self.train_annot_dir, fname)
+            try:
+                with Image.open(annot_path) as annot_image:
+                    annot = np.array(annot_image)
+            except (OSError, ValueError):
+                # Sync-backed files can be observed while still being written.
+                # Keep all previous pools intact until the next epoch retries.
+                return False
+            if annot.ndim < 3 or annot.shape[2] < 2:
+                continue
+            if np.any(annot[:, :, 0]):
+                foreground_fnames.append(fname)
+            if np.any(annot[:, :, 1]):
+                background_fnames.append(fname)
+
+        changed = (
+            foreground_fnames != self.foreground_fnames
+            or background_fnames != self.background_fnames)
+        self.foreground_fnames = foreground_fnames
+        self.background_fnames = background_fnames
+        return changed
+
+    def _sampling_pool(self):
+        """Return (filenames, required channel) for the next training tile."""
+        has_foreground = bool(self.foreground_fnames)
+        has_background = bool(self.background_fnames)
+        if not has_foreground and not has_background:
+            raise RuntimeError('No non-empty training annotations available')
+
+        if has_foreground and has_background:
+            sample_foreground = (
+                random.random() < self.foreground_tile_fraction)
+        else:
+            sample_foreground = has_foreground
+
+        if sample_foreground:
+            return self.foreground_fnames, 0
+        return self.background_fnames, 1
+
     def __getitem__(self, _):
+        fnames, required_channel = self._sampling_pool()
         image, annot, fname = load_train_image_and_annot(self.dataset_dir,
-                                                         self.train_annot_dir)
+                                                         self.train_annot_dir,
+                                                         fnames=fnames)
         tile_pad = (self.in_w - self.out_w) // 2
 
         # ensures each pixel is sampled with equal chance
@@ -147,8 +210,12 @@ class TrainDataset(Dataset):
                                       x_in:x_in+self.in_w]
             # U-Net predicts only the central 500 pixels of a 572-pixel
             # input. Do not accept a crop merely because its annotation lies
-            # in the 36-pixel context border that is removed before loss.
-            if np.sum(annotation_output_region(annot_tile, tile_pad)) > 0:
+            # in the 36-pixel context border that is removed before loss. The
+            # selected correction class must itself occur in the output area;
+            # otherwise a nominal foreground sample could still train only on
+            # background pixels from a mixed annotation.
+            output_annot = annotation_output_region(annot_tile, tile_pad)
+            if np.any(output_annot[:, :, required_channel]):
                 break
 
         im_tile = padded_im[y_in:y_in+self.in_w,
