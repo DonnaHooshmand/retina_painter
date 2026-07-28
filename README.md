@@ -27,7 +27,7 @@ RetinaPainter builds on a prior application of RootPainter to retinal OCT: in [D
 
 - **Reproducible model trials** — The New Project **Trial seed** fixes image order, the filename-level 5:1 train/validation split, random model/decoder initialization, and training-data RNGs. New projects store the split in the `.seg_proj`, so blank scans or model-dependent corrections cannot shift later images between train and validation. The automatic split is per-file, not patient-aware; use an externally prepared patient-level split for research evaluation.
 
-- **Rare-lesion checkpoint control** — UI checkpoints and early stopping use the continuous masked combined Dice + 0.3 CE objective. Hard pixel F1 remains diagnostic, but cannot leave the UI stuck on a random fuzzy checkpoint while RIPL probabilities are improving below 0.5. Background-only validation uses CE and emits a warning.
+- **Rare-lesion checkpoint control** — Same-project UI predictions use the current in-memory training model, so painter feedback is not held behind validation checkpoint promotion. Durable validation-best checkpoints and early stopping use the continuous masked combined Dice + 0.3 CE objective; hard pixel F1 remains diagnostic. Background-only validation uses CE and emits a warning.
 
 - **Detection-first clinical evaluation** — The primary RIPL endpoint is whether a held-out OCT B-scan contains at least one RIPL. Models are compared using the B-scan confusion matrix and sensitivity, specificity, PPV, NPV, and balanced accuracy. Pixel Dice/IoU are secondary training and localization diagnostics, not measures of clinical success.
 
@@ -136,7 +136,7 @@ start-trainer --syncdir /path/to/sync_dir
 
 The `--model-type` CLI arg still exists as a server-side default (useful when the trainer is started independently and the painter has not yet sent a project instruction), but it is not normally needed.
 
-**Checkpoint selection and early stopping:** both use continuous masked combined Dice + 0.3 CE. The default patience is 60 epochs; raise it for hard, slow-to-converge biomarkers with `--max-epochs-without-progress N` (e.g. `--max-epochs-without-progress 120`). Hard pixel F1 is logged as a diagnostic but cannot block UI checkpoint updates. These are internal training mechanisms, not the clinical endpoint. Clinical model comparison uses patient-separated B-scan RIPL detection.
+**Live UI inference, checkpoint selection, and early stopping:** while a project is actively training, its painter predictions use the current in-memory model. Explicit checkpoint requests, stopped projects, and other projects still use saved model files. Durable validation-best checkpoint selection and early stopping both use continuous masked combined Dice + 0.3 CE. The default patience is 60 epochs; raise it for hard, slow-to-converge biomarkers with `--max-epochs-without-progress N` (e.g. `--max-epochs-without-progress 120`). Hard pixel F1 is logged as a diagnostic but cannot block checkpoint promotion. These are internal training mechanisms, not the clinical endpoint. Clinical model comparison uses patient-separated B-scan RIPL detection.
 
 **`retfound_rfa` vs `retfound`:** Both use the same encoder weights, 224×224 tiles, combined Dice/CE loss, 21/24-block freezing policy, and AdamW settings. `retfound_rfa` adds a U-Net decoder with skip connections from four intermediate ViT layers and attention gates. Keeping the training policy shared makes the comparison primarily a decoder comparison; RFA costs slightly more memory.
 

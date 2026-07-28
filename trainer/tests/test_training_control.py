@@ -15,6 +15,7 @@ src_dir = os.path.join(os.path.dirname(test_dir), 'src')
 sys.path.insert(0, src_dir)
 
 from datasets import annotation_output_region
+import model_utils
 from model_utils import (combined_validation_loss, save_if_better,
                          seeded_torch_rng)
 from trainer import Trainer
@@ -128,3 +129,120 @@ def test_retfound_has_no_discarded_annotation_border():
     annot = np.zeros((224, 224, 2), dtype=np.uint8)
     annot[0, 0, 0] = 1
     assert annotation_output_region(annot, tile_pad=0).sum() == 1
+
+
+def test_same_project_segment_uses_live_training_model(tmp_path, monkeypatch):
+    trainer = object.__new__(Trainer)
+    trainer.sync_dir = str(tmp_path)
+    trainer.training = True
+    trainer.model_type = 'unet'
+    trainer.model = torch.nn.Linear(2, 2)
+    model_dir = tmp_path / 'project' / 'models'
+    trainer.train_config = {'model_dir': str(model_dir)}
+
+    calls = []
+
+    def capture_segment(in_dir, seg_dir, fname, model_paths, format_str,
+                        live_model=None):
+        calls.append((in_dir, seg_dir, fname, model_paths, format_str,
+                      live_model))
+
+    monkeypatch.setattr(trainer, 'segment_file', capture_segment)
+
+    def fail_if_checkpoint_is_requested(*_args, **_kwargs):
+        pytest.fail('same-project UI inference requested a saved checkpoint')
+
+    monkeypatch.setattr(
+        model_utils, 'get_latest_model_paths', fail_if_checkpoint_is_requested)
+
+    segment_config = {
+        'dataset_dir': str(tmp_path / 'dataset'),
+        'seg_dir': str(tmp_path / 'segmentations'),
+        'model_dir': str(model_dir),
+        'model_type': 'unet',
+        'file_names': ['scan.png'],
+    }
+    trainer.segment(segment_config)
+
+    assert len(calls) == 1
+    assert calls[0][2] == 'scan.png'
+    assert calls[0][3] is None
+    assert calls[0][5] is trainer.model
+
+
+def test_segment_falls_back_to_saved_checkpoint_when_not_training(
+        tmp_path, monkeypatch):
+    trainer = object.__new__(Trainer)
+    trainer.sync_dir = str(tmp_path)
+    trainer.training = False
+    trainer.model_type = 'unet'
+    trainer.model = None
+    trainer.train_config = None
+
+    best_path = str(tmp_path / 'models' / '000007_best.pkl')
+    monkeypatch.setattr(
+        model_utils, 'get_latest_model_paths',
+        lambda model_dir, count: [best_path])
+
+    calls = []
+
+    def capture_segment(in_dir, seg_dir, fname, model_paths, format_str,
+                        live_model=None):
+        calls.append((model_paths, live_model))
+
+    monkeypatch.setattr(trainer, 'segment_file', capture_segment)
+
+    trainer.segment({
+        'dataset_dir': str(tmp_path / 'dataset'),
+        'seg_dir': str(tmp_path / 'segmentations'),
+        'model_dir': str(tmp_path / 'models'),
+        'model_type': 'unet',
+        'file_names': ['scan.png'],
+    })
+
+    assert calls == [([best_path], None)]
+
+
+def test_live_model_is_rejected_for_explicit_or_other_project_requests(
+        tmp_path):
+    trainer = object.__new__(Trainer)
+    trainer.training = True
+    trainer.model_type = 'unet'
+    trainer.model = torch.nn.Linear(2, 2)
+    trainer.train_config = {
+        'model_dir': str(tmp_path / 'active' / 'models'),
+    }
+
+    assert trainer._get_live_model_for_segment({
+        'model_dir': str(tmp_path / 'active' / 'models'),
+        'model_paths': ['controlled.pkl'],
+    }) is None
+    assert trainer._get_live_model_for_segment({
+        'model_dir': str(tmp_path / 'other' / 'models'),
+    }) is None
+    assert trainer._get_live_model_for_segment({
+        'model_dir': str(tmp_path / 'active' / 'models'),
+        'model_type': 'retfound',
+    }) is None
+
+
+@pytest.mark.parametrize('was_training', [True, False])
+def test_live_inference_restores_model_mode_and_disables_grad(
+        monkeypatch, was_training):
+    model = torch.nn.Linear(2, 2)
+    model.train(was_training)
+    calls = []
+
+    def fake_unet_segment(cnn, image, bs, in_w, out_w, threshold):
+        calls.append((cnn.training, torch.is_grad_enabled()))
+        return np.full(image.shape[:2], 0.75, dtype=np.float32)
+
+    monkeypatch.setattr(model_utils, 'unet_segment', fake_unet_segment)
+
+    result = model_utils.ensemble_segment_models(
+        [model], np.zeros((4, 4, 3), dtype=np.uint8),
+        bs=1, in_w=4, out_w=4)
+
+    assert calls == [(False, False), (False, False)]
+    assert model.training is was_training
+    assert np.all(result == 1)

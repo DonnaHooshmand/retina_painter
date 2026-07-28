@@ -85,7 +85,8 @@ Each skip connection passes through an `_AttentionGate` (additive attention: Wg 
 
 Each epoch, `Trainer.validation()` ([trainer.py](trainer/src/trainer.py)) evaluates the current model on `annotations/val/` and decides both *which* checkpoint to keep and *when* to stop.
 
-- **Checkpoint selection and early stopping share one continuous objective.** `get_val_metrics` computes masked combined Dice + 0.3 cross-entropy over explicitly supervised pixels. `save_if_better` promotes a new UI checkpoint when this objective decreases, and the same value drives the "epochs without progress" counter.
+- **Checkpoint selection and early stopping share one continuous objective.** `get_val_metrics` computes masked combined Dice + 0.3 cross-entropy over explicitly supervised pixels. `save_if_better` promotes a new durable validation-best checkpoint when this objective decreases, and the same value drives the "epochs without progress" counter.
+- **Live painter feedback is decoupled from checkpoint promotion.** While the same project is actively training, segmentation instructions use the current in-memory model in evaluation/no-gradient mode and then restore its training mode. Explicit checkpoint requests, stopped projects, and other projects still use saved model files.
 - **Hard pixel F1 is diagnostic only.** On rare biomarkers it can remain 0 while probabilities improve below the 0.5 threshold, or a random fuzzy model can earn a tiny F1 by accidental overlap. It is logged but cannot block checkpoint updates.
 - **Background-only validation remains informative.** When no foreground is currently painted in validation, Dice is undefined, so the CE term selects lower false-positive probability and the trainer emits a warning. This is an internal fallback, not a substitute for a patient-separated positive validation set.
 - **Configurable patience:** `--max-epochs-without-progress` (default 60) on `main.py` / `start-trainer`. The counter and `best_val_loss` also reset whenever annotations change.
@@ -261,7 +262,7 @@ A review pass over the model/loss/training code produced these fixes, covered by
 
 - **Loss routing is centralized in `loss.training_loss`.** `auto` resolves to RootPainter's `combined_loss` (Dice + 0.3·CE) for every model so the front-end model selector changes only the architecture.
 - **`--loss-type {auto,combined,tversky}` supports controlled ablations.** Tversky requires an explicit override. Changing the loss does not change checkpoint structure, but separate fresh project copies are required for interpretable comparisons.
-- **Checkpoint selection and early stopping aligned** — both use masked combined Dice + 0.3 CE. Hard F1 is diagnostic only, and background-only validation falls back to CE with a warning. This prevents the UI from remaining stuck on a random fuzzy checkpoint while probabilities improve below 0.5.
+- **Live UI inference is decoupled from checkpoint promotion** — the actively training project's painter predictions use current in-memory weights, while durable checkpoint selection and early stopping both use masked combined Dice + 0.3 CE. Hard F1 is diagnostic only, and background-only validation falls back to CE with a warning.
 - **`get_metrics` returns 0.0 (not NaN) when there are no true positives**, and guards every `/ total` division against `total == 0` (no more crash on an empty val tile). `metrics.py`.
 - **`train_one_epoch` photo guard fixed** — `if not [is_photo(a) for a in ls(d)]` (truthy unless the dir is empty) → `if not any(is_photo(a) ...)`. `trainer.py`.
 - **DataLoader workers re-seed NumPy** via `worker_init_fn=_seed_worker`, so `np.random`-based augmentations (Gaussian noise, salt-and-pepper) are no longer duplicated across workers. `trainer.py`.

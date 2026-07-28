@@ -550,14 +550,16 @@ class Trainer():
         saved_path = save_if_better(
             model_dir, self.model, prev_path,
             cur_metrics['loss'], prev_metrics['loss'])
-        ui_checkpoint = saved_path or prev_path
+        best_checkpoint = saved_path or prev_path
         checkpoint_message = (
-            f'UI checkpoint: {os.path.basename(ui_checkpoint)}')
+            f'Best validation checkpoint: '
+            f'{os.path.basename(best_checkpoint)}')
         print(checkpoint_message, flush=True)
         self.log(checkpoint_message)
 
-        # Early stopping uses the same continuous objective as checkpoint
-        # promotion so the progress message and the UI model cannot disagree.
+        # Early stopping and durable best-checkpoint promotion use the same
+        # continuous objective. Live painter inference is intentionally
+        # decoupled and uses the current in-memory training model.
         cur_val_loss = cur_metrics['loss']
         if cur_val_loss < self.best_val_loss - self.min_val_loss_delta:
             self.best_val_loss = cur_val_loss
@@ -606,13 +608,42 @@ class Trainer():
             log_file.write(f"{datetime.now()}|{time.time()}|{message}\n")
             log_file.flush()
 
+    def _get_live_model_for_segment(self, segment_config):
+        """Return the active model for same-project painter inference.
+
+        Explicit ``model_paths`` always win so exports and controlled
+        checkpoint evaluations retain their existing behavior. When training
+        is active, matching by model directory prevents another project's
+        segmentation request from borrowing this project's in-memory model.
+        """
+        if 'model_paths' in segment_config:
+            return None
+        if not self.training or self.model is None or not self.train_config:
+            return None
+        if segment_config.get('model_type', self.model_type) != self.model_type:
+            return None
+
+        segment_model_dir = segment_config.get('model_dir')
+        training_model_dir = self.train_config.get('model_dir')
+        if not segment_model_dir or not training_model_dir:
+            return None
+
+        segment_model_dir = os.path.normcase(
+            os.path.abspath(os.fspath(segment_model_dir)))
+        training_model_dir = os.path.normcase(
+            os.path.abspath(os.fspath(training_model_dir)))
+        if segment_model_dir != training_model_dir:
+            return None
+        return self.model
+
     def segment(self, segment_config):
         """
-        Segment {file_names} from {dataset_dir} using {model_paths}
-        and save to {seg_dir}.
+        Segment {file_names} from {dataset_dir} and save to {seg_dir}.
 
-        If model paths are not specified then use
-        the latest model in {model_dir}.
+        Explicit {model_paths} are always honored. Otherwise, an actively
+        training project uses its current in-memory model so painter feedback
+        is not held behind validation checkpoint promotion. Other requests use
+        the latest durable validation-best checkpoint in {model_dir}.
 
         If no models are in {model_dir} then create a
         random weights model and use that.
@@ -634,8 +665,13 @@ class Trainer():
             # default to using all files in the directory if file_names is not specified.
             fnames = ls(in_dir)
 
-        # if model paths not specified use latest.
-        if "model_paths" in segment_config:
+        live_model = self._get_live_model_for_segment(segment_config)
+        if live_model is not None:
+            model_paths = None
+            source_message = 'UI inference model: live training weights'
+            print(source_message, flush=True)
+            self.log(source_message)
+        elif "model_paths" in segment_config:
             model_paths = segment_config['model_paths']
         else:
             model_dir = segment_config['model_dir']
@@ -649,15 +685,22 @@ class Trainer():
                                                        seed=segment_config.get(
                                                            'model_seed'))
                 model_paths = model_utils.get_latest_model_paths(model_dir, 1)
-        print(f'Segmenting {len(fnames)} image(s) using {len(model_paths)} model(s).', flush=True)
+        if live_model is None:
+            source_message = (
+                f'UI inference model: {len(model_paths)} saved checkpoint(s)')
+            print(source_message, flush=True)
+            self.log(source_message)
+        print(f'Segmenting {len(fnames)} image(s).', flush=True)
         start = time.time()
         for fname in fnames:
             self.segment_file(in_dir, seg_dir, fname,
-                              model_paths, format_str)
+                              model_paths, format_str,
+                              live_model=live_model)
         duration = time.time() - start
         print(f'Seconds to segment {len(fnames)} images: ', round(duration, 3))
         
-    def segment_file(self, in_dir, seg_dir, fname, model_paths, format_str):
+    def segment_file(self, in_dir, seg_dir, fname, model_paths, format_str,
+                     live_model=None):
         fpath = os.path.join(in_dir, fname)
 
         # When the client navigates through images, there is a risk that 
@@ -711,9 +754,13 @@ class Trainer():
                 print('Exception loading', fpath, e)
                 return
             seg_start = time.time()
-            seg_out = ensemble_segment(model_paths, photo, self.bs,
-                                         self.in_w, self.out_w,
-                                         model_type=self.model_type)
+            if live_model is not None:
+                seg_out = model_utils.ensemble_segment_models(
+                    [live_model], photo, self.bs, self.in_w, self.out_w)
+            else:
+                seg_out = ensemble_segment(model_paths, photo, self.bs,
+                                           self.in_w, self.out_w,
+                                           model_type=self.model_type)
             print(f'ensemble segment {fname}, dur', round(time.time() - seg_start, 2))
             # catch warnings as low contrast is ok here.
             with warnings.catch_warnings():

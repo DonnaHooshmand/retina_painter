@@ -276,27 +276,49 @@ def save_if_better(model_dir, cur_model, prev_model_path,
 def ensemble_segment(model_paths, image, bs, in_w, out_w,
                      threshold=0.5, model_type='unet'):
     """ Average predictions from each model specified in model_paths """
+    models = (load_model(model_path, model_type=model_type)
+              for model_path in model_paths)
+    return ensemble_segment_models(
+        models, image, bs, in_w, out_w, threshold=threshold)
+
+
+def ensemble_segment_models(models, image, bs, in_w, out_w, threshold=0.5):
+    """Average predictions from already-instantiated models.
+
+    This is used for live painter inference while a project is training. Model
+    mode is restored after inference so an instruction handled between training
+    batches cannot accidentally leave the trainable model in evaluation mode.
+    """
     pred_sum = None
     pred_count = 0
     image, pad_settings = im_utils.pad_to_min(image, min_w=in_w, min_h=in_w)
-    # then add predictions from the previous models to form an ensemble
-    for model_path in model_paths:
-        cnn = load_model(model_path, model_type=model_type)
-        print(f'  Running inference (original)...', flush=True)
-        preds = unet_segment(cnn, image,
-                             bs, in_w, out_w, threshold=None)
-        if pred_sum is not None:
-            pred_sum += preds
-        else:
-            pred_sum = preds
-        pred_count += 1
-        # get flipped version too (test time augmentation)
-        flipped_im = np.fliplr(image)
-        print(f'  Running inference (flipped)...', flush=True)
-        flipped_pred = unet_segment(cnn, flipped_im, bs, in_w,
-                                    out_w, threshold=None)
-        pred_sum += np.fliplr(flipped_pred)
-        pred_count += 1
+    # Then add predictions from each model to form an ensemble.
+    for cnn in models:
+        was_training = cnn.training
+        try:
+            cnn.eval()
+            with torch.inference_mode():
+                print(f'  Running inference (original)...', flush=True)
+                preds = unet_segment(cnn, image,
+                                     bs, in_w, out_w, threshold=None)
+                if pred_sum is not None:
+                    pred_sum += preds
+                else:
+                    pred_sum = preds
+                pred_count += 1
+                # Get flipped version too (test time augmentation).
+                flipped_im = np.fliplr(image)
+                print(f'  Running inference (flipped)...', flush=True)
+                flipped_pred = unet_segment(cnn, flipped_im, bs, in_w,
+                                            out_w, threshold=None)
+                pred_sum += np.fliplr(flipped_pred)
+                pred_count += 1
+        finally:
+            cnn.train(was_training)
+
+    if pred_count == 0:
+        raise ValueError('At least one model is required for segmentation')
+
     pred_sum = im_utils.crop_from_pad_settings(pred_sum, pad_settings)
     foreground_probs = pred_sum / pred_count
     predicted = foreground_probs > threshold
