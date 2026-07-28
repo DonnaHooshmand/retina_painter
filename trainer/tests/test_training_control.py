@@ -18,6 +18,7 @@ sys.path.insert(0, src_dir)
 import datasets
 from datasets import TrainDataset, annotation_output_region
 import model_utils
+import trainer as trainer_module
 from model_utils import (combined_validation_loss, save_if_better,
                          seeded_torch_rng)
 from trainer import Trainer
@@ -192,12 +193,14 @@ def test_train_dataset_falls_back_when_no_foreground_exists(
     assert mask.sum() > 0
 
 
-def test_same_project_segment_uses_live_training_model(tmp_path, monkeypatch):
+def test_same_project_segment_uses_stable_ui_checkpoint(
+        tmp_path, monkeypatch):
     trainer = object.__new__(Trainer)
     trainer.sync_dir = str(tmp_path)
     trainer.training = True
     trainer.model_type = 'unet'
     trainer.model = torch.nn.Linear(2, 2)
+    trainer.validation_has_foreground = True
     model_dir = tmp_path / 'project' / 'models'
     trainer.train_config = {'model_dir': str(model_dir)}
 
@@ -210,11 +213,10 @@ def test_same_project_segment_uses_live_training_model(tmp_path, monkeypatch):
 
     monkeypatch.setattr(trainer, 'segment_file', capture_segment)
 
-    def fail_if_checkpoint_is_requested(*_args, **_kwargs):
-        pytest.fail('same-project UI inference requested a saved checkpoint')
-
+    best_path = str(model_dir / '000013_best.pkl')
     monkeypatch.setattr(
-        model_utils, 'get_latest_model_paths', fail_if_checkpoint_is_requested)
+        model_utils, 'get_latest_model_paths',
+        lambda requested_dir, count: [best_path])
 
     segment_config = {
         'dataset_dir': str(tmp_path / 'dataset'),
@@ -227,8 +229,38 @@ def test_same_project_segment_uses_live_training_model(tmp_path, monkeypatch):
 
     assert len(calls) == 1
     assert calls[0][2] == 'scan.png'
-    assert calls[0][3] is None
-    assert calls[0][5] is trainer.model
+    assert calls[0][3] == [best_path]
+    assert calls[0][5] is None
+
+
+def test_foreground_free_warmup_uses_provisional_live_model(
+        tmp_path, monkeypatch):
+    trainer = object.__new__(Trainer)
+    trainer.sync_dir = str(tmp_path)
+    trainer.training = True
+    trainer.model_type = 'unet'
+    trainer.model = torch.nn.Linear(2, 2)
+    trainer.validation_has_foreground = False
+    model_dir = tmp_path / 'project' / 'models'
+    trainer.train_config = {'model_dir': str(model_dir)}
+    calls = []
+
+    def capture_segment(in_dir, seg_dir, fname, model_paths, format_str,
+                        live_model=None):
+        calls.append((model_paths, live_model))
+
+    monkeypatch.setattr(trainer, 'segment_file', capture_segment)
+    monkeypatch.setattr(
+        model_utils, 'get_latest_model_paths',
+        lambda *_args: pytest.fail('warm-up requested a saved checkpoint'))
+    trainer.segment({
+        'dataset_dir': str(tmp_path / 'dataset'),
+        'seg_dir': str(tmp_path / 'segmentations'),
+        'model_dir': str(model_dir),
+        'model_type': 'unet',
+        'file_names': ['scan.png'],
+    })
+    assert calls == [(None, trainer.model)]
 
 
 def test_segment_falls_back_to_saved_checkpoint_when_not_training(
@@ -264,27 +296,78 @@ def test_segment_falls_back_to_saved_checkpoint_when_not_training(
     assert calls == [([best_path], None)]
 
 
-def test_live_model_is_rejected_for_explicit_or_other_project_requests(
-        tmp_path):
+def test_explicit_checkpoint_request_is_honored(tmp_path, monkeypatch):
     trainer = object.__new__(Trainer)
-    trainer.training = True
+    trainer.sync_dir = str(tmp_path)
+    trainer.training = False
+    trainer.model_type = 'unet'
+    trainer.model = None
+    trainer.train_config = None
+    calls = []
+    monkeypatch.setattr(
+        trainer, 'segment_file',
+        lambda _in, _out, _fname, paths, _format, live_model=None:
+        calls.append((paths, live_model)))
+    monkeypatch.setattr(
+        model_utils, 'get_latest_model_paths',
+        lambda *_args: pytest.fail('explicit request queried latest model'))
+
+    trainer.segment({
+        'dataset_dir': str(tmp_path / 'dataset'),
+        'seg_dir': str(tmp_path / 'segmentations'),
+        'model_dir': str(tmp_path / 'models'),
+        'model_type': 'unet',
+        'model_paths': ['controlled.pkl'],
+        'file_names': ['scan.png'],
+    })
+    assert calls == [(['controlled.pkl'], None)]
+
+
+def test_candidate_rolls_back_after_consecutive_worse_epochs(
+        tmp_path, monkeypatch):
+    trainer = object.__new__(Trainer)
     trainer.model_type = 'unet'
     trainer.model = torch.nn.Linear(2, 2)
-    trainer.train_config = {
-        'model_dir': str(tmp_path / 'active' / 'models'),
-    }
+    trainer.optimizer = object()
+    trainer.min_val_loss_delta = 1e-4
+    trainer.candidate_rollback_patience = 3
+    trainer.candidate_worse_epochs = 0
+    trainer.log = lambda _message: None
+    trainer.write_message = lambda _message: None
+    ui_model = torch.nn.Linear(2, 2)
+    rebuilt_optimizer = object()
+    monkeypatch.setattr(
+        trainer_module, 'build_optimizer',
+        lambda model, model_type: rebuilt_optimizer)
 
-    assert trainer._get_live_model_for_segment({
-        'model_dir': str(tmp_path / 'active' / 'models'),
-        'model_paths': ['controlled.pkl'],
-    }) is None
-    assert trainer._get_live_model_for_segment({
-        'model_dir': str(tmp_path / 'other' / 'models'),
-    }) is None
-    assert trainer._get_live_model_for_segment({
-        'model_dir': str(tmp_path / 'active' / 'models'),
-        'model_type': 'retfound',
-    }) is None
+    for _ in range(2):
+        assert not trainer._rollback_worse_candidate(
+            cur_loss=1.0, ui_loss=0.5, annotations_changed=False,
+            ui_model=ui_model, ui_checkpoint_path='000013_best.pkl')
+        assert trainer.model is not ui_model
+
+    assert trainer._rollback_worse_candidate(
+        cur_loss=1.0, ui_loss=0.5, annotations_changed=False,
+        ui_model=ui_model, ui_checkpoint_path='000013_best.pkl')
+    assert trainer.model is ui_model
+    assert trainer.optimizer is rebuilt_optimizer
+    assert trainer.model.training
+    assert trainer.candidate_worse_epochs == 0
+
+
+def test_annotation_change_gives_candidate_rollback_grace_epoch(tmp_path):
+    trainer = object.__new__(Trainer)
+    trainer.model_type = 'unet'
+    trainer.model = torch.nn.Linear(2, 2)
+    trainer.min_val_loss_delta = 1e-4
+    trainer.candidate_rollback_patience = 1
+    trainer.candidate_worse_epochs = 0
+
+    assert not trainer._rollback_worse_candidate(
+        cur_loss=1.0, ui_loss=0.5, annotations_changed=True,
+        ui_model=torch.nn.Linear(2, 2),
+        ui_checkpoint_path=str(tmp_path / 'best.pkl'))
+    assert trainer.candidate_worse_epochs == 0
 
 
 @pytest.mark.parametrize('was_training', [True, False])

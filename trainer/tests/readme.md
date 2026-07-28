@@ -36,7 +36,7 @@ python -m pytest test_loss_masking.py::test_combined_loss_zero_grad_on_untouched
 | `test_instructions.py` | 11 | Painter→trainer instruction retry handling, UI model-type preservation, model switching, and optimizer routing. Confirms both RETFound decoders, including DataParallel-wrapped production models, use identical 21/24-block freezing and AdamW settings while U-Net retains its inherited SGD optimizer. |
 | `test_metrics.py` | 5 | Metric edge cases, including no true positives, no defined pixels, and validation-loss passthrough. |
 | `test_fundusegmenter.py` | 4 | Placeholder model construction, shape, finite output, and factory routing. |
-| `test_training_control.py` | 8 | Trial seeding and RNG isolation, continuous-loss checkpoint promotion below the hard-F1 threshold, background-only validation, and U-Net context-border supervision. |
+| `test_training_control.py` | 18 | Trial seeding and RNG isolation, continuous-loss checkpoint promotion below the hard-F1 threshold, background-only validation, deterministic foreground/background corrective sampling and fallback, U-Net context-border supervision, provisional live warm-up, stable UI checkpoint routing, and automatic candidate rollback. |
 | `test_utils.py` | (helpers) | Not a test file — shared utilities (`get_acc`, etc.) imported by the others. Pytest collects no tests here. |
 
 ## End-to-end smoke scripts

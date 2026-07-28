@@ -91,8 +91,11 @@ class Trainer():
                  model_type='unet',
                  loss_type='auto',
                  max_epochs_without_progress=60,
+                 candidate_rollback_patience=3,
                  ):
 
+        if candidate_rollback_patience < 1:
+            raise ValueError('candidate_rollback_patience must be at least 1')
         self.model_type = model_type
         # Validate once at startup; in auto mode the resolved loss follows any
         # later per-project model-type switch from the painter.
@@ -175,6 +178,17 @@ class Trainer():
         # improvement. ~30 min at default cadence; configurable via
         # --max-epochs-without-progress.
         self.max_epochs_without_progress = max_epochs_without_progress
+        # Painter inference uses the durable validation-best checkpoint. If
+        # the in-memory candidate remains materially worse than that checkpoint
+        # for this many consecutive epochs, automatically restore it and reset
+        # the optimizer instead of requiring a doctor to Stop/Start training.
+        self.candidate_rollback_patience = candidate_rollback_patience
+        self.candidate_worse_epochs = 0
+        # Before validation contains any foreground, no checkpoint can yet be
+        # called lesion-informed. The UI may use the live candidate during
+        # this explicitly provisional warm-up, then switches permanently to
+        # durable validation-best checkpoints once foreground is available.
+        self.validation_has_foreground = False
         # Best (lowest) validation loss seen this run, plus the smallest
         # improvement that counts as progress (guards against val noise).
         self.best_val_loss = float('inf')
@@ -334,6 +348,7 @@ class Trainer():
         if self.training:
             self.training = False
             self.epochs_without_progress = 0
+            self.candidate_worse_epochs = 0
             self.best_val_loss = float('inf')
             message = 'Training stopped'
             self.write_message(message)
@@ -363,6 +378,8 @@ class Trainer():
             self.configure_training_seed(config.get('training_seed'))
             self.train_config = config
             self.epochs_without_progress = 0
+            self.candidate_worse_epochs = 0
+            self.validation_has_foreground = False
             self.best_val_loss = float('inf')
             self.msg_dir = self.train_config['message_dir']
             model_dir = self.train_config['model_dir']
@@ -401,10 +418,15 @@ class Trainer():
         if new_annot_mtimes != self.annot_mtimes:
             print('reset epochs without progress as annotations have changed')
             self.epochs_without_progress = 0
+            self.candidate_worse_epochs = 0
             # The val set changed, so the previous best val loss is stale.
             self.best_val_loss = float('inf')
             self.warned_no_val_foreground = False
+            changed = True
+        else:
+            changed = False
         self.annot_mtimes = new_annot_mtimes
+        return changed
 
     def write_message(self, message):
         """ write a message for the user (client) """
@@ -556,33 +578,49 @@ class Trainer():
         print('prev f1', str(round(prev_metrics['f1'], 5)).ljust(7, '0'),
               'cur f1', str(round(cur_metrics['f1'], 5)).ljust(7, '0'),
               '(diagnostic only)')
+        annotations_changed = self.reset_progress_if_annots_changed()
+        self.validation_has_foreground = (
+            cur_metrics['foreground_defined'] > 0)
         saved_path = save_if_better(
             model_dir, self.model, prev_path,
             cur_metrics['loss'], prev_metrics['loss'])
-        best_checkpoint = saved_path or prev_path
-        checkpoint_message = (
-            f'Best validation checkpoint: '
-            f'{os.path.basename(best_checkpoint)}')
+        ui_checkpoint = saved_path or prev_path
+        validation_state = (
+            'provisional background-only validation'
+            if cur_metrics['foreground_defined'] == 0
+            else 'foreground-informed validation')
+        if saved_path:
+            self.candidate_worse_epochs = 0
+            checkpoint_message = (
+                f'UI checkpoint promoted: {os.path.basename(ui_checkpoint)} '
+                f'({validation_state})')
+        else:
+            checkpoint_message = (
+                f'UI checkpoint retained: {os.path.basename(ui_checkpoint)} '
+                f'({validation_state})')
         print(checkpoint_message, flush=True)
         self.log(checkpoint_message)
 
-        # Early stopping and durable best-checkpoint promotion use the same
-        # continuous objective. Live painter inference is intentionally
-        # decoupled and uses the current in-memory training model.
-        cur_val_loss = cur_metrics['loss']
-        if cur_val_loss < self.best_val_loss - self.min_val_loss_delta:
-            self.best_val_loss = cur_val_loss
+        # Checkpoint promotion, automatic rollback, and early stopping all use
+        # the same continuous objective. A changed annotation set receives one
+        # grace epoch because its new objective is not comparable to the prior
+        # epoch's counter.
+        if saved_path:
+            self.best_val_loss = cur_metrics['loss']
             self.epochs_without_progress = 0
-        else:
+        elif not annotations_changed:
             self.epochs_without_progress += 1
 
-        self.reset_progress_if_annots_changed()
+        self._rollback_worse_candidate(
+            cur_metrics['loss'], prev_metrics['loss'],
+            annotations_changed, prev_model, prev_path)
 
         if cur_metrics['foreground_defined'] == 0:
             if not self.warned_no_val_foreground:
                 warning = ('Warning validation annotations contain no '
-                           'foreground; checkpoint selection is using '
-                           'background cross-entropy only')
+                           'foreground; UI checkpoint promotion is '
+                           'provisional and uses background '
+                           'cross-entropy only')
                 print(warning, flush=True)
                 self.log(warning)
                 self.write_message(warning)
@@ -603,6 +641,38 @@ class Trainer():
             self.training = False
             self.write_message(message)
 
+    def _rollback_worse_candidate(self, cur_loss, ui_loss,
+                                  annotations_changed,
+                                  ui_model, ui_checkpoint_path):
+        """Restore the stable UI checkpoint after sustained candidate drift."""
+        if annotations_changed or not (
+                np.isfinite(cur_loss) and np.isfinite(ui_loss)):
+            self.candidate_worse_epochs = 0
+            return False
+
+        if cur_loss > ui_loss + self.min_val_loss_delta:
+            self.candidate_worse_epochs += 1
+        else:
+            self.candidate_worse_epochs = 0
+
+        if (self.candidate_worse_epochs
+                < self.candidate_rollback_patience):
+            return False
+
+        self.model = ui_model
+        self.optimizer = build_optimizer(self.model, self.model_type)
+        self.model.train()
+        self.candidate_worse_epochs = 0
+        message = (
+            'Automatic candidate rollback: restored UI checkpoint '
+            f'{os.path.basename(ui_checkpoint_path)} after '
+            f'{self.candidate_rollback_patience} consecutive worse '
+            'validation epochs')
+        print(message, flush=True)
+        self.log(message)
+        self.write_message(message)
+        return True
+
     def write_train_metrics(self, metrics):
         metric_str = get_metrics_str(metrics,
                                      to_use=['f1_score', 'recall',
@@ -617,15 +687,11 @@ class Trainer():
             log_file.write(f"{datetime.now()}|{time.time()}|{message}\n")
             log_file.flush()
 
-    def _get_live_model_for_segment(self, segment_config):
-        """Return the active model for same-project painter inference.
-
-        Explicit ``model_paths`` always win so exports and controlled
-        checkpoint evaluations retain their existing behavior. When training
-        is active, matching by model directory prevents another project's
-        segmentation request from borrowing this project's in-memory model.
-        """
+    def _get_provisional_live_model_for_segment(self, segment_config):
+        """Return live weights only during foreground-free validation warm-up."""
         if 'model_paths' in segment_config:
+            return None
+        if getattr(self, 'validation_has_foreground', False):
             return None
         if not self.training or self.model is None or not self.train_config:
             return None
@@ -636,7 +702,6 @@ class Trainer():
         training_model_dir = self.train_config.get('model_dir')
         if not segment_model_dir or not training_model_dir:
             return None
-
         segment_model_dir = os.path.normcase(
             os.path.abspath(os.fspath(segment_model_dir)))
         training_model_dir = os.path.normcase(
@@ -649,10 +714,11 @@ class Trainer():
         """
         Segment {file_names} from {dataset_dir} and save to {seg_dir}.
 
-        Explicit {model_paths} are always honored. Otherwise, an actively
-        training project uses its current in-memory model so painter feedback
-        is not held behind validation checkpoint promotion. Other requests use
-        the latest durable validation-best checkpoint in {model_dir}.
+        Explicit {model_paths} are always honored. Before validation has any
+        foreground, same-project feedback uses provisional live weights so
+        early learning is visible. Once validation is foreground-informed,
+        painter feedback uses the latest durable validation-best checkpoint.
+        The candidate is promoted or rolled back automatically by validation().
 
         If no models are in {model_dir} then create a
         random weights model and use that.
@@ -674,10 +740,13 @@ class Trainer():
             # default to using all files in the directory if file_names is not specified.
             fnames = ls(in_dir)
 
-        live_model = self._get_live_model_for_segment(segment_config)
+        live_model = self._get_provisional_live_model_for_segment(
+            segment_config)
         if live_model is not None:
             model_paths = None
-            source_message = 'UI inference model: live training weights'
+            source_message = (
+                'UI inference model: provisional live training weights '
+                '(validation has no foreground)')
             print(source_message, flush=True)
             self.log(source_message)
         elif "model_paths" in segment_config:
@@ -696,7 +765,8 @@ class Trainer():
                 model_paths = model_utils.get_latest_model_paths(model_dir, 1)
         if live_model is None:
             source_message = (
-                f'UI inference model: {len(model_paths)} saved checkpoint(s)')
+                'UI checkpoint: '
+                + ', '.join(os.path.basename(path) for path in model_paths))
             print(source_message, flush=True)
             self.log(source_message)
         print(f'Segmenting {len(fnames)} image(s).', flush=True)

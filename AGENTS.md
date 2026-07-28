@@ -57,7 +57,7 @@ lesion-level TN is undefined.
 
 Defined in `unet.py` (`UNetGNRes`). Uses Group Normalization (not Batch Norm) with residual connections. Default input patch size 572×572, output 500×500 (valid convolutions crop 36px per side). Valid patch sizes: 572, 556, 540, ..., 28.
 
-**Training sampler:** `TrainDataset` retains RootPainter's inherited minimum of 612 randomly generated crops per epoch. Each sample chooses a training annotation file and then a random crop containing at least one explicitly supervised pixel in the model's output region. For U-Net this prevents an annotation in the discarded 36-pixel context border from admitting a zero-supervision crop. Sampling is not yet foreground/background-stratified; changing 612 or class balance requires a controlled experiment.
+**Training sampler:** `TrainDataset` retains RootPainter's inherited minimum of 612 randomly generated crops per epoch. It builds pools from the sparse corrections already collected; when both are available, 50% of samples require red foreground and 50% require green background in the model's actual output region. It falls back automatically when either pool is empty. For U-Net this also prevents an annotation in the discarded 36-pixel context border from admitting a zero-supervision crop. Pool filenames are sorted and all random choices remain governed by the trial seed.
 
 ### RETFound plain decoder (`--model-type retfound`)
 
@@ -179,7 +179,7 @@ Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
 ## Testing
 
-Tests are in `trainer/tests/`. Run from that directory. Full fast trainer suite is 83 tests; runtime depends heavily on the available accelerator.
+Tests are in `trainer/tests/`. Run from that directory. Full fast trainer suite is 93 tests; runtime depends heavily on the available accelerator.
 
 ```bash
 cd trainer/tests
@@ -206,7 +206,7 @@ python -m pytest test_training.py -v -s
 - `test_retfound.py` (14 tests) — ViT token shape, `RETFoundSeg` forward pass shape, strict checkpoint compatibility, softmax correctness, gradient flow, 21/24-block encoder freezing, and a tiling smoke test.
 - `test_retfound_rfa.py` (18 tests) — `forward_multi_features` shape, `RETFoundSegRFA` forward pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing, Tversky loss properties, and a tiling smoke test.
 - `test_loss_masking.py` (18 tests, Phase 1 + loss routing) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both `combined_loss` and `tversky_loss`; loss is invariant to the amount of untouched canvas; parity with legacy unmasked loss when mask is all-1s; model families route to their intended objectives; and explicit loss overrides work for controlled ablations.
-- `test_training_control.py` (8 tests) — trial seeding, RNG isolation, continuous-loss checkpoint promotion while hard F1 remains zero, background-only validation, and U-Net discarded-border supervision.
+- `test_training_control.py` (18 tests) — trial seeding, RNG isolation, continuous-loss checkpoint promotion while hard F1 remains zero, background-only validation, deterministic correction-class sampling, provisional foreground-free UI warm-up, stable checkpoint routing, automatic candidate rollback, and U-Net discarded-border supervision.
 
 **End-to-end smoke scripts** (not collected by pytest, run manually):
 - `smoke_phase1.py` — UNet integration: 30-step training run, legacy-vs-fixed loss comparison across untouched-fraction settings, gradient isolation. Runs in ~30s on CPU.
