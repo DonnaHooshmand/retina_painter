@@ -455,12 +455,18 @@ class Trainer():
             return
 
         if self.train_set.refresh_annotation_pools():
+            foreground_fraction = (
+                self.train_set.effective_foreground_tile_fraction())
+            sampling_policy = (
+                'adaptive'
+                if self.train_set.foreground_tile_fraction is None
+                else 'fixed')
             sampler_message = (
                 'Training sampler: '
                 f'{len(self.train_set.foreground_fnames)} foreground-bearing, '
                 f'{len(self.train_set.background_fnames)} background-bearing '
                 'annotation(s); foreground tile target '
-                f'{self.train_set.foreground_tile_fraction:.0%}')
+                f'{foreground_fraction:.0%} ({sampling_policy})')
             print(sampler_message, flush=True)
             self.log(sampler_message)
 

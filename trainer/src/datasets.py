@@ -103,14 +103,18 @@ class UNetTransformer():
 
 class TrainDataset(Dataset):
     def __init__(self, train_annot_dir, dataset_dir, in_w, out_w,
-                 min_epoch_tiles=612, foreground_tile_fraction=0.5):
+                 min_epoch_tiles=612, foreground_tile_fraction=None):
         """
         in_w and out_w are the tile size in pixels
         min_epoch_tiles: minimum number of samples per epoch
-        foreground_tile_fraction: target fraction of samples drawn from an
-            annotation/crop containing explicit foreground supervision
+        foreground_tile_fraction: optional fixed fraction of samples drawn
+            from an annotation/crop containing explicit foreground
+            supervision. None adapts to the current foreground/background
+            annotation-pool sizes so every pool member has equal expected
+            sampling frequency.
         """
-        if not 0 <= foreground_tile_fraction <= 1:
+        if (foreground_tile_fraction is not None
+                and not 0 <= foreground_tile_fraction <= 1):
             raise ValueError('foreground_tile_fraction must be in [0, 1]')
         self.in_w = in_w
         self.out_w = out_w
@@ -169,15 +173,27 @@ class TrainDataset(Dataset):
         if not has_foreground and not has_background:
             raise RuntimeError('No non-empty training annotations available')
 
+        foreground_fraction = self.effective_foreground_tile_fraction()
         if has_foreground and has_background:
-            sample_foreground = (
-                random.random() < self.foreground_tile_fraction)
+            sample_foreground = random.random() < foreground_fraction
         else:
             sample_foreground = has_foreground
 
         if sample_foreground:
             return self.foreground_fnames, 0
         return self.background_fnames, 1
+
+    def effective_foreground_tile_fraction(self):
+        """Return the fixed or pool-size-adaptive foreground tile target."""
+        if self.foreground_tile_fraction is not None:
+            return self.foreground_tile_fraction
+
+        foreground_count = len(self.foreground_fnames)
+        background_count = len(self.background_fnames)
+        total_count = foreground_count + background_count
+        if total_count == 0:
+            return 0.0
+        return foreground_count / total_count
 
     def __getitem__(self, _):
         fnames, required_channel = self._sampling_pool()

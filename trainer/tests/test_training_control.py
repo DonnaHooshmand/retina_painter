@@ -170,6 +170,37 @@ def test_train_dataset_balances_correction_types_reproducibly(
     assert 80 <= sum(first) <= 120
 
 
+def test_train_dataset_adapts_to_annotation_pool_sizes(
+        tmp_path, monkeypatch):
+    annot_dir = tmp_path / 'annotations'
+    annot_dir.mkdir()
+    _write_correction(annot_dir / 'foreground.png', channel=0)
+    for index in range(3):
+        _write_correction(
+            annot_dir / f'background_{index}.png', channel=1)
+
+    def fake_load(_dataset_dir, _annot_dir, fnames=None):
+        fname = random.sample(sorted(fnames), 1)[0]
+        annot = np.zeros((4, 4, 2), dtype=bool)
+        annot[:, :, 0 if fname == 'foreground.png' else 1] = True
+        return np.zeros((4, 4, 3), dtype=np.uint8), annot, fname
+
+    monkeypatch.setattr(datasets, 'load_train_image_and_annot', fake_load)
+    train_set = TrainDataset(
+        str(annot_dir), str(tmp_path / 'images'), in_w=4, out_w=4,
+        min_epoch_tiles=400)
+    train_set.augmentor.transform = lambda photo, annot: (photo, annot)
+
+    assert train_set.foreground_tile_fraction is None
+    assert train_set.effective_foreground_tile_fraction() == 0.25
+
+    random.seed(123)
+    foreground_draws = sum(
+        int(train_set[index][1].sum() > 0)
+        for index in range(400))
+    assert 75 <= foreground_draws <= 125
+
+
 def test_train_dataset_falls_back_when_no_foreground_exists(
         tmp_path, monkeypatch):
     annot_dir = tmp_path / 'annotations'
