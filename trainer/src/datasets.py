@@ -109,9 +109,11 @@ class TrainDataset(Dataset):
         min_epoch_tiles: minimum number of samples per epoch
         foreground_tile_fraction: optional fixed fraction of samples drawn
             from an annotation/crop containing explicit foreground
-            supervision. None adapts to the current foreground/background
-            annotation-pool sizes so every pool member has equal expected
-            sampling frequency.
+            supervision. None adapts the crop-routing probability to
+            foreground_pool / (foreground_pool + background_pool), so every
+            pool member has equal expected sampling frequency. This is not an
+            estimate of dataset foreground prevalence; files with both
+            correction types occur in both pools.
         """
         if (foreground_tile_fraction is not None
                 and not 0 <= foreground_tile_fraction <= 1):
