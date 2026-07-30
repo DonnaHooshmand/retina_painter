@@ -428,6 +428,11 @@ class Trainer():
         if new_annot_mtimes != self.annot_mtimes:
             print('reset epochs without progress as annotations have changed')
             self.epochs_without_progress = 0
+            # New corrections change what the candidate must learn. Restart
+            # the rollback grace period so active annotation cannot repeatedly
+            # discard the in-memory candidate after only a few epochs. The UI
+            # remains protected by the durable validation-best checkpoint.
+            self.candidate_worse_epochs = 0
             # The val set changed, so the previous best val loss is stale.
             self.best_val_loss = float('inf')
             self.warned_no_val_foreground = False
@@ -613,10 +618,10 @@ class Trainer():
         self.log(checkpoint_message)
 
         # Checkpoint promotion, automatic rollback, and early stopping all use
-        # the same continuous objective. Annotation updates reset only the
-        # early-stopping counter. Candidate and UI checkpoint are both
-        # re-evaluated on the same current validation set, so their regression
-        # comparison remains valid across those updates.
+        # the same continuous objective. Annotation updates restart both
+        # patience counters so the candidate gets a fresh chance to learn the
+        # expanded correction set. Candidate and UI checkpoint are both
+        # re-evaluated on the same current validation set.
         if saved_path:
             self.best_val_loss = cur_metrics['loss']
             self.epochs_without_progress = 0

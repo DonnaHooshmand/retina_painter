@@ -429,7 +429,7 @@ def test_background_only_validation_never_rolls_back_candidate(tmp_path):
     assert trainer.candidate_worse_epochs == 0
 
 
-def test_annotation_change_preserves_candidate_regression_counter(tmp_path):
+def test_annotation_change_restarts_candidate_rollback_patience(tmp_path):
     trainer = object.__new__(Trainer)
     train_dir = tmp_path / 'train'
     val_dir = tmp_path / 'val'
@@ -448,7 +448,7 @@ def test_annotation_change_preserves_candidate_regression_counter(tmp_path):
 
     assert trainer.reset_progress_if_annots_changed()
     assert trainer.epochs_without_progress == 0
-    assert trainer.candidate_worse_epochs == 2
+    assert trainer.candidate_worse_epochs == 0
 
 
 @pytest.mark.parametrize('was_training', [True, False])
