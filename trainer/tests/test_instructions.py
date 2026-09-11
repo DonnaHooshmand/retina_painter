@@ -232,4 +232,4 @@ def test_fix_config_paths_preserves_ui_model_type(sync_dir):
     assert fixed['model_type'] == 'retfound_rfa'
     assert fixed['training_seed'] == 42
     assert fixed['model_dir'] == os.path.join(
-        sync_dir, 'projects/trial/models')
+        sync_dir, 'projects', 'trial', 'models')

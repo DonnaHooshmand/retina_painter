@@ -13,10 +13,10 @@ source ../env/bin/activate          # macOS / Linux
 python -m pytest test_loss.py test_unet.py test_utils.py test_loss_masking.py \
                   test_retfound.py test_retfound_rfa.py test_instructions.py \
                   test_metrics.py test_fundusegmenter.py \
-                  test_training_control.py -v
+                  test_training_control.py test_nested_annotation_datasets.py -v
 ```
 
-Expected: **83 passed**.
+Expected: **99 passed**.
 
 A single test:
 
@@ -36,7 +36,8 @@ python -m pytest test_loss_masking.py::test_combined_loss_zero_grad_on_untouched
 | `test_instructions.py` | 11 | Painter→trainer instruction retry handling, UI model-type preservation, model switching, and optimizer routing. Confirms both RETFound decoders, including DataParallel-wrapped production models, use identical 21/24-block freezing and AdamW settings while U-Net retains its inherited SGD optimizer. |
 | `test_metrics.py` | 5 | Metric edge cases, including no true positives, no defined pixels, and validation-loss passthrough. |
 | `test_fundusegmenter.py` | 4 | Placeholder model construction, shape, finite output, and factory routing. |
-| `test_training_control.py` | 22 | Trial seeding and RNG isolation, continuous-loss checkpoint promotion below the hard-F1 threshold, background-only validation, deterministic fixed and adaptive foreground/background corrective sampling and fallback, U-Net context-border supervision, background-loss-gated provisional live warm-up, stable UI checkpoint routing, foreground-gated automatic rollback, and regression-counter preservation across annotation updates. |
+| `test_training_control.py` | 22 | Trial seeding and RNG isolation, continuous-loss checkpoint promotion below the hard-F1 threshold, background-only validation, deterministic fixed and adaptive foreground/background corrective sampling and fallback, U-Net context-border supervision, background-loss-gated provisional live warm-up, stable UI checkpoint routing, foreground-gated automatic rollback, and rollback-grace restart after annotation updates. |
+| `test_nested_annotation_datasets.py` | 2 | Reproducible seeded ranking, strict subset nesting, exclusion handling, provenance manifests, copy verification, and refusal to delete unexpected images. |
 | `test_utils.py` | (helpers) | Not a test file — shared utilities (`get_acc`, etc.) imported by the others. Pytest collects no tests here. |
 
 ## End-to-end smoke scripts

@@ -39,9 +39,10 @@ Background-only CE may provisionally promote checkpoints but cannot trigger
 automatic rollback because it cannot assess sensitivity. Once validation is
 foreground-informed, the UI uses the durable best checkpoint and a candidate
 that is worse for three consecutive epochs is restored automatically.
-Annotation updates reset early stopping but do not erase that regression
-history because candidate and incumbent are re-evaluated on the same current
-validation set.
+Annotation updates reset early stopping and restart the three-epoch candidate
+rollback grace period because the candidate needs time to learn the expanded
+correction set. Candidate and incumbent are then re-evaluated on the same
+current validation set.
 
 ## Clinical Evaluation Contract
 
@@ -192,7 +193,7 @@ Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
 ## Testing
 
-Tests are in `trainer/tests/`. Run from that directory. Full fast trainer suite is 96 tests; runtime depends heavily on the available accelerator.
+Tests are in `trainer/tests/`. Run from that directory. Full fast trainer suite is 99 tests; runtime depends heavily on the available accelerator.
 
 ```bash
 cd trainer/tests
@@ -201,7 +202,7 @@ cd trainer/tests
 python -m pytest test_loss.py test_unet.py test_utils.py test_loss_masking.py \
                   test_retfound.py test_retfound_rfa.py \
                   test_fundusegmenter.py test_metrics.py test_instructions.py \
-                  test_training_control.py -v
+                  test_training_control.py test_nested_annotation_datasets.py -v
 
 # Individual files
 python -m pytest test_retfound.py -v          # RETFound plain decoder
@@ -219,7 +220,8 @@ python -m pytest test_training.py -v -s
 - `test_retfound.py` (14 tests) — ViT token shape, `RETFoundSeg` forward pass shape, strict checkpoint compatibility, softmax correctness, gradient flow, 21/24-block encoder freezing, and a tiling smoke test.
 - `test_retfound_rfa.py` (18 tests) — `forward_multi_features` shape, `RETFoundSegRFA` forward pass shape, softmax correctness, no-NaN, gradient flow, encoder freezing, Tversky loss properties, and a tiling smoke test.
 - `test_loss_masking.py` (18 tests, Phase 1 + loss routing) — sparse-supervision regression tests: untouched pixels contribute zero gradient and zero loss-value sensitivity for both `combined_loss` and `tversky_loss`; loss is invariant to the amount of untouched canvas; parity with legacy unmasked loss when mask is all-1s; model families route to their intended objectives; and explicit loss overrides work for controlled ablations.
-- `test_training_control.py` (22 tests) — trial seeding, RNG isolation, continuous-loss checkpoint promotion while hard F1 remains zero, background-only validation, deterministic fixed and adaptive correction-class sampling, background-loss-gated provisional UI warm-up, stable checkpoint routing, foreground-gated automatic rollback, regression-counter preservation across annotation updates, and U-Net discarded-border supervision.
+- `test_training_control.py` (22 tests) — trial seeding, RNG isolation, continuous-loss checkpoint promotion while hard F1 remains zero, background-only validation, deterministic fixed and adaptive correction-class sampling, background-loss-gated provisional UI warm-up, stable checkpoint routing, foreground-gated automatic rollback, rollback-grace restart after annotation updates, and U-Net discarded-border supervision.
+- `test_nested_annotation_datasets.py` (2 tests) — reproducible seeded ranking, strict subset nesting, exclusion handling, manifests, copy verification, and refusal to delete unexpected images.
 
 **End-to-end smoke scripts** (not collected by pytest, run manually):
 - `smoke_phase1.py` — UNet integration: 30-step training run, legacy-vs-fixed loss comparison across untouched-fraction settings, gradient isolation. Runs in ~30s on CPU.
