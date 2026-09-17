@@ -48,6 +48,12 @@ parser.add_argument('--max-epochs-without-progress',
                     default=60,
                     help=('stop training after this many validation epochs'
                           ' with no improvement in validation loss'))
+parser.add_argument('--min-foreground-val-files-for-rollback',
+                    type=int,
+                    default=2,
+                    help=('minimum number of foreground-bearing validation '
+                          'annotations required before automatic candidate '
+                          'rollback'))
 parser.add_argument('--loss-type',
                     default='auto',
                     choices=['auto', 'combined', 'tversky'],
@@ -63,10 +69,14 @@ def start():
                           max_batch_size=args.maxbatchsize,
                           model_type=args.model_type,
                           loss_type=args.loss_type,
-                          max_epochs_without_progress=args.max_epochs_without_progress)
+                          max_epochs_without_progress=args.max_epochs_without_progress,
+                          min_foreground_val_files_for_rollback=(
+                              args.min_foreground_val_files_for_rollback))
     else:
         trainer = Trainer(max_batch_size=args.maxbatchsize,
                           model_type=args.model_type,
                           loss_type=args.loss_type,
-                          max_epochs_without_progress=args.max_epochs_without_progress)
+                          max_epochs_without_progress=args.max_epochs_without_progress,
+                          min_foreground_val_files_for_rollback=(
+                              args.min_foreground_val_files_for_rollback))
     trainer.main_loop()

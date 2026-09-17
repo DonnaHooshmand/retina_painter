@@ -71,6 +71,11 @@ from random_split import RandomSplitWidget
 from resize_images import ResizeWidget
 from keyboard_shortcuts_dialog import KeyboardShortcutsDialog
 from server_manager import find_trainer_launch, ServerManager, ServerLogDialog, check_trainer_status
+from review_widget import ReviewWidget
+from review_utils import (completed_review_count, export_completed_reviews,
+                          incomplete_warmup_reviews, load_review,
+                          mark_training_started, save_review,
+                          should_auto_start_training, training_has_started)
 
 
 
@@ -216,6 +221,9 @@ class RetinaPainter(QtWidgets.QMainWindow):
             specified_dataset_dir, proj_file_path)
         self.dataset_dir = confirmed_dataset_dir
         self.proj_location = self.sync_dir / PurePath(settings['location'])
+        self.training_has_started = training_has_started(self.proj_location)
+        self.auto_start_training_after_reviews = settings.get(
+            'auto_start_training_after_reviews', 10)
         self.image_fnames = settings['file_names']
         self.seg_dir = self.proj_location / 'segmentations'
         self.log_dir = self.proj_location / 'logs'
@@ -304,6 +312,22 @@ class RetinaPainter(QtWidgets.QMainWindow):
     def update_file(self, fpath):
         
         fname = os.path.basename(fpath)
+        current_fname = (
+            os.path.basename(self.image_path)
+            if hasattr(self, 'image_path') else None)
+        current_index = (
+            self.image_fnames.index(current_fname)
+            if current_fname in self.image_fnames else None)
+        target_index = (
+            self.image_fnames.index(fname)
+            if fname in self.image_fnames else None)
+        moving_forward = (
+            current_index is not None
+            and target_index is not None
+            and current_index != target_index
+            and (target_index > current_index
+                 or (current_index == len(self.image_fnames) - 1
+                     and target_index == 0)))
 
         # update selected point in the plot.
         # do first to give fast user feedback. 
@@ -312,7 +336,43 @@ class RetinaPainter(QtWidgets.QMainWindow):
 
 
         # Save current annotation (if it exists) before moving on
-        self.save_annotation()
+        if not self.save_annotation():
+            self.nav.image_path = self.image_path
+            self.nav.update_nav_label()
+            self.nav.next_image_button.setText('Save && Next >')
+            self.nav.next_image_button.setEnabled(True)
+            return
+        if moving_forward and current_fname:
+            current_review = load_review(
+                self.proj_location, current_fname) or {}
+            if not current_review.get('review_complete'):
+                self.restore_navigation_after_block()
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    'Review not complete',
+                    'Select RIPL present, RIPL absent, or uncertain and check '
+                    'Review complete before moving forward.')
+                return
+
+            incomplete = incomplete_warmup_reviews(
+                self.proj_location,
+                self.image_fnames,
+                self.auto_start_training_after_reviews)
+            if (not self.training_has_started
+                    and target_index >= self.auto_start_training_after_reviews
+                    and incomplete):
+                first_missing = incomplete[0]
+                missing_index = self.image_fnames.index(first_missing) + 1
+                self.restore_navigation_after_block()
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    'Initial reviews incomplete',
+                    f'Training needs the first '
+                    f'{self.auto_start_training_after_reviews} completed '
+                    f'reviews. Image {missing_index} is incomplete:\n\n'
+                    f'{first_missing}\n\nUse Previous to return to it.')
+                return
+            self.maybe_auto_start_training()
 
         # set first image from project to be current image
         self.image_path = os.path.join(self.dataset_dir, fname)
@@ -330,10 +390,18 @@ class RetinaPainter(QtWidgets.QMainWindow):
 
         self.update_seg()
         self.update_annot()
+        self.load_current_review()
 
         self.segment_current_image()
         self.update_window_title()
         self.log(f'update_file_end,fname:{os.path.basename(fpath)}')
+
+    def restore_navigation_after_block(self):
+        """Keep navigation and the displayed image synchronized after a block."""
+        self.nav.image_path = self.image_path
+        self.nav.update_nav_label()
+        self.nav.next_image_button.setText('Save && Next >')
+        self.nav.next_image_button.setEnabled(True)
 
 
     def update_context_viewer(self):
@@ -795,6 +863,7 @@ class RetinaPainter(QtWidgets.QMainWindow):
         self.graphics_view.setMouseTracking(True)
         self.scene = scene
         self.nav = NavWidget(self.image_fnames, [self.train_annot_dir, self.val_annot_dir])
+        self.review_widget = ReviewWidget()
         self.update_file(self.image_path)
 
         # bottom bar
@@ -842,6 +911,7 @@ class RetinaPainter(QtWidgets.QMainWindow):
         info_container_left.setLayout(info_container_left_layout)
         self.messages_label = messages_label
         bottom_bar_r_layout.addWidget(info_container_left)
+        bottom_bar_r_layout.addWidget(self.review_widget)
         bottom_bar_r_layout.addWidget(self.nav)
 
         # brush size label
@@ -924,6 +994,98 @@ class RetinaPainter(QtWidgets.QMainWindow):
         self.close()
         self.closed.emit()
 
+    def closeEvent(self, event):
+        """Persist the current scan when the project window is closed."""
+        if hasattr(self, 'scene') and hasattr(self, 'proj_location'):
+            self.save_annotation()
+        super().closeEvent(event)
+
+    def load_current_review(self):
+        """Load the scan-level decision and completion state into the UI."""
+        if not hasattr(self, 'review_widget'):
+            return
+        image_filename = os.path.basename(self.image_path)
+        review = load_review(self.proj_location, image_filename) or {}
+        self.review_widget.set_review(
+            review.get('decision'), review.get('review_complete', False))
+        self.review_widget.set_completed_count(
+            completed_review_count(self.proj_location))
+
+    def save_current_review(self):
+        """Persist review status and completed-review provenance snapshots."""
+        if not hasattr(self, 'review_widget') or not hasattr(self, 'png_fname'):
+            return True
+        image_filename = os.path.basename(self.image_path)
+        decision = self.review_widget.decision()
+        review_complete = self.review_widget.is_complete()
+        try:
+            save_review(
+                self.proj_location,
+                image_filename,
+                decision,
+                review_complete,
+                segmentation_path=self.seg_path,
+                annotation_path=self.annot_path,
+                use_prediction=self.training_has_started,
+                image_path=self.image_path)
+        except (OSError, ValueError) as error:
+            # Never leave a record falsely marked complete when its provenance
+            # snapshots could not be saved.
+            self.review_widget.complete_checkbox.setChecked(False)
+            save_review(
+                self.proj_location,
+                image_filename,
+                decision,
+                False)
+            QtWidgets.QMessageBox.warning(
+                self, 'Review not marked complete', str(error))
+            return False
+        completed_count = completed_review_count(self.proj_location)
+        self.review_widget.set_completed_count(completed_count)
+        return True
+
+    def maybe_auto_start_training(self):
+        """Start once every required initial scan is review-complete."""
+        incomplete = incomplete_warmup_reviews(
+            self.proj_location,
+            self.image_fnames,
+            self.auto_start_training_after_reviews)
+        if incomplete:
+            return False
+        if not should_auto_start_training(
+                self.auto_start_training_after_reviews,
+                self.auto_start_training_after_reviews,
+                self.training_has_started):
+            return False
+        self.log(
+            'automatic_start_training,'
+            f'completed_reviews:{self.auto_start_training_after_reviews}')
+        self.start_training()
+        return True
+
+    def export_reviews(self):
+        """Export completed reviews as a CSV and reconstructed binary masks."""
+        if not self.save_annotation():
+            return
+        try:
+            result = export_completed_reviews(
+                self.proj_location, image_order=self.image_fnames)
+        except (OSError, ValueError, KeyError) as error:
+            QtWidgets.QMessageBox.warning(
+                self, 'Could not export completed reviews', str(error))
+            return
+        warning_count = result['decision_mask_inconsistency_count']
+        warning_text = (
+            f"\n\n{warning_count} decision/mask inconsistency warning(s) "
+            "are listed in the export metadata."
+            if warning_count else "")
+        QtWidgets.QMessageBox.about(
+            self,
+            'Completed reviews exported',
+            f"Exported {result['completed_review_count']} completed review(s) "
+            f"to:\n\n{result['output_dir']}"
+            f"{warning_text}")
+
     def add_menu(self):
         menu_bar = self.menuBar()
         menu_bar.clear()
@@ -933,6 +1095,11 @@ class RetinaPainter(QtWidgets.QMainWindow):
         self.close_project_action = QtWidgets.QAction(QtGui.QIcon(""), "Close project", self)
         self.project_menu.addAction(self.close_project_action)
         self.close_project_action.triggered.connect(self.close_project_window)
+
+        self.export_reviews_action = QtWidgets.QAction(
+            QtGui.QIcon(""), "Export completed reviews", self)
+        self.project_menu.addAction(self.export_reviews_action)
+        self.export_reviews_action.triggered.connect(self.export_reviews)
 
         edit_menu = menu_bar.addMenu("Edit")
         # Undo
@@ -1202,6 +1369,8 @@ class RetinaPainter(QtWidgets.QMainWindow):
 
     def start_training(self):
         self.messages_label.setText("Starting training...")
+        mark_training_started(self.proj_location)
+        self.training_has_started = True
         content = {
             "model_dir": self.model_dir,
             "dataset_dir": self.dataset_dir,
@@ -1410,5 +1579,7 @@ class RetinaPainter(QtWidgets.QMainWindow):
                                                     self.val_annot_dir,
                                                     fixed_target_dir)
             self.metrics_plot.add_file_metrics(os.path.basename(self.image_path))
+            return self.save_current_review()
+        return True
 
 

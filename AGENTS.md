@@ -21,7 +21,31 @@ The key departure from RootPainter is the model backend: instead of a U-Net trai
 
 **Annotation routing — train vs. validation:** New projects pre-assign every seeded filename to a fixed 5:1 train/validation split before annotation begins (`fixed_train_val_split` in `project_order.py`). The `.seg_proj` stores `train_file_names` and `val_file_names`; blank scans or model-dependent corrections cannot shift later filenames between splits. Projects created before this change omit those lists and retain the inherited count-based router. Existing pre-populated annotations are always overwritten in place, preserving externally prepared splits.
 
-**Reproducible trial seed:** The New Project dialog has a **Trial seed** (default `0`). For new projects this single value fixes navigation order, filename-level train/validation membership, random model/decoder initialization, DataLoader ordering, worker RNGs, and Python/NumPy/PyTorch sampling. Training filenames are sorted before random selection so filesystem order cannot change seeded trials. Exact bitwise equality is only expected on the same software/hardware stack.
+**Reproducible trial seed and manifest order:** The New Project dialog has a **Trial seed** (default `0`). For ordinary new projects this single value fixes navigation order, filename-level train/validation membership, random model/decoder initialization, DataLoader ordering, worker RNGs, and Python/NumPy/PyTorch sampling. Training filenames are sorted before random selection so filesystem order cannot change seeded trials. When the selected dataset or its parent contains a `manifest.csv` with `rank` and `filename`, manifest rank overrides the navigation shuffle while the trial seed continues to control model initialization and training randomness. This makes every smaller nested dataset an exact navigation prefix of every larger one. Exact bitwise equality is only expected on the same software/hardware stack.
+
+**Clinician review records:** The painter records an explicit B-scan decision
+(`present`, `absent`, or `uncertain`) separately from a `review_complete`
+flag. Completed reviews snapshot both the displayed prediction and sparse
+correction PNG under `<project>/reviews/`, with SHA-256 hashes in
+`review_records.json`. Before training first starts, the random prediction is
+ignored for export and the binary mask contains only red clinician foreground.
+After training starts, export uses `prediction - green + red`; an explicit
+`absent` decision always overrides residual prediction with an empty mask.
+Pre-training `present` completion requires red foreground, and `absent`
+completion rejects contradictory red foreground. New projects automatically
+start training after the first ten ordered scans are all completed and the
+clinician advances. Forward navigation requires the current review to be
+complete, and the warm-up gate identifies the first missing initial review;
+Previous remains available for correction. The manual start action remains
+available.
+**Project > Export completed reviews** writes the masks into a timestamped
+`<project>/review_exports/` directory and writes a review CSV plus consistency
+metadata. This makes a correction-free confirmed negative distinguishable
+from an unreviewed scan and prevents later live segmentations from changing
+completed exports. Each completed review also gets a labeled visual copy under
+`reviews/decision_previews/` for human audit; the live UI, source OCT, and
+sparse training annotation stay free of label text. See
+`docs/clinician_review_workflow.md`.
 
 The fixed seeded split is per-file and still has **no patient-group awareness**. For patient-separated research splits:
 - **Pre-populate empty annotation PNGs** at the correct train/val location before opening the painter. The painter's `get_annot_path` ([file_utils.py:58](painter/src/main/python/file_utils.py:58)) finds the existing file and `maybe_save_annotation` overwrites in place, never invoking the 5:1 router. The `prepare_annotations.py` script in the user's data-prep tooling does this.
@@ -37,8 +61,11 @@ checkpoint. A candidate outside that false-positive safety margin continues
 training in memory while the UI uses the durable provisional checkpoint.
 Background-only CE may provisionally promote checkpoints but cannot trigger
 automatic rollback because it cannot assess sensitivity. Once validation is
-foreground-informed, the UI uses the durable best checkpoint and a candidate
-that is worse for three consecutive epochs is restored automatically.
+foreground-informed, the UI uses the durable best checkpoint. A candidate
+that is worse for three consecutive epochs is restored automatically only
+after at least two validation annotation files contain foreground. With just
+one foreground-bearing validation file, rollback is explicitly deferred
+because that one sparse scan is too noisy to justify discarding the candidate.
 Annotation updates reset early stopping and restart the three-epoch candidate
 rollback grace period because the candidate needs time to learn the expanded
 correction set. Candidate and incumbent are then re-evaluated on the same

@@ -51,5 +51,37 @@ python prepare_nested_annotation_datasets.py `
   --seed 2026
 ```
 
-When creating a RetinaPainter project, select the desired numeric child folder
-instead of the `RIPL_dataset_2026` parent.
+For clinician collection, create one separate RetinaPainter project per doctor
+and select the `600` child folder, not the `RIPL_dataset_2026` parent. Each
+doctor reviews those 600 images once. The smaller sample sizes are derived
+later using `manifest.csv`: folder `150` is ranks 1–150, folder `200` is ranks
+1–200, and each later folder adds the next 50 ranks. Doctors should not
+annotate all ten folders separately.
+
+The numeric folders support nested sample-size experiments; they are not ten
+independent random samples. Keep annotations, review records, and exported
+masks in the RetinaPainter project rather than editing these dataset copies.
+The manifest records each image's rank, first containing subset, patient ID,
+eye, size, hash, and source path. `dataset_metadata.json` records the selection
+algorithm and construction inputs.
+
+For each scan the clinician selects `RIPL present`, `RIPL absent`, or
+`uncertain`, then marks `Review complete`. Before training first starts, the
+random prediction is ignored for mask export and the clinician must paint
+every true RIPL red. A confirmed absent review exports an empty mask without
+requiring exhaustive green coverage of random false positives. After training
+starts, the usual corrective workflow applies: red adds missed RIPLs, green
+removes false positives, and correct suggestions can remain untouched. See
+`docs/clinician_review_workflow.md` for the complete provenance and export
+contract. New projects automatically start training after the tenth completed
+review is saved and the clinician advances. Forward navigation requires the
+current review to be complete, and the warm-up gate identifies any missing
+review among the first ten. Manual start remains available for deliberately
+different protocols.
+
+When a project is created from any numeric folder, RetinaPainter detects the
+parent manifest and uses its rank as the navigation order instead of applying
+a separate shuffle to each folder. Consequently, the first 150 scans in the
+250-image trial are exactly the same ordered scans as the complete 150-image
+trial. The project trial seed still controls model initialization, training
+sampling, worker randomness, and other stochastic training behavior.

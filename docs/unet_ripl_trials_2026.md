@@ -91,12 +91,15 @@ not directly minimize false-positive objects per scan or maximize B-scan
 sensitivity. The trial therefore demonstrated occasional useful recognition,
 but not reliable small-data RIPL detection.
 
-### Next engineering hypothesis
+### Implemented follow-up
 
-Do not interpret Trial 6 as evidence that the adaptive sampler is broken. A
-future controlled change should keep validation provisional until it contains
-more than one foreground-bearing image, and should avoid aggressive candidate
-rollback while validation evidence is that sparse. The threshold and grace
-period must be tested explicitly rather than chosen from this smoke test alone.
-Official clinician annotation should use a larger, reproducibly sampled image
-collection, followed by patient-separated evaluation.
+Do not interpret Trial 6 as evidence that the adaptive sampler is broken.
+Automatic candidate rollback now requires at least two independently
+foreground-bearing validation annotation files. With exactly one, checkpoint
+promotion and training continue but rollback is explicitly deferred and the
+terminal reports `1/2 foreground-bearing files`. The three-epoch rollback
+patience begins only after the minimum evidence exists. This is the smallest
+guard against the specific Trial 6 failure and does not make a two-image
+validation set statistically strong. Official clinician annotation should use
+the larger reproducibly sampled collection, followed by patient-separated
+evaluation.

@@ -92,11 +92,15 @@ class Trainer():
                  loss_type='auto',
                  max_epochs_without_progress=60,
                  candidate_rollback_patience=3,
+                 min_foreground_val_files_for_rollback=2,
                  provisional_ui_loss_margin=0.01,
                  ):
 
         if candidate_rollback_patience < 1:
             raise ValueError('candidate_rollback_patience must be at least 1')
+        if min_foreground_val_files_for_rollback < 1:
+            raise ValueError(
+                'min_foreground_val_files_for_rollback must be at least 1')
         if provisional_ui_loss_margin < 0:
             raise ValueError('provisional_ui_loss_margin cannot be negative')
         self.model_type = model_type
@@ -186,12 +190,20 @@ class Trainer():
         # for this many consecutive epochs, automatically restore it and reset
         # the optimizer instead of requiring a doctor to Stop/Start training.
         self.candidate_rollback_patience = candidate_rollback_patience
+        # One tiny-lesion validation scan is too noisy to decide that the
+        # in-memory candidate must be discarded. Promotion and training still
+        # proceed, but automatic rollback waits for this many independently
+        # foreground-bearing validation annotations.
+        self.min_foreground_val_files_for_rollback = (
+            min_foreground_val_files_for_rollback)
         self.candidate_worse_epochs = 0
         # Before validation contains any foreground, no checkpoint can yet be
         # called lesion-informed. The UI may use the live candidate during
         # this explicitly provisional warm-up, then switches permanently to
         # durable validation-best checkpoints once foreground is available.
         self.validation_has_foreground = False
+        self.validation_foreground_file_count = 0
+        self.rollback_deferred_foreground_count = None
         # A foreground-free validation set cannot assess sensitivity, but it
         # can identify a candidate that is creating substantially more false
         # positives. Continue training such a candidate in memory while
@@ -389,6 +401,8 @@ class Trainer():
             self.epochs_without_progress = 0
             self.candidate_worse_epochs = 0
             self.validation_has_foreground = False
+            self.validation_foreground_file_count = 0
+            self.rollback_deferred_foreground_count = None
             self.provisional_live_safe = True
             self.best_val_loss = float('inf')
             self.msg_dir = self.train_config['message_dir']
@@ -433,6 +447,7 @@ class Trainer():
             # discard the in-memory candidate after only a few epochs. The UI
             # remains protected by the durable validation-best checkpoint.
             self.candidate_worse_epochs = 0
+            self.rollback_deferred_foreground_count = None
             # The val set changed, so the previous best val loss is stale.
             self.best_val_loss = float('inf')
             self.warned_no_val_foreground = False
@@ -601,16 +616,29 @@ class Trainer():
         annotations_changed = self.reset_progress_if_annots_changed()
         self.validation_has_foreground = (
             cur_metrics['foreground_defined'] > 0)
+        self.validation_foreground_file_count = cur_metrics.get(
+            'foreground_file_count',
+            int(self.validation_has_foreground))
         self._update_provisional_ui_safety(
             cur_metrics['loss'], prev_metrics['loss'])
         saved_path = save_if_better(
             model_dir, self.model, prev_path,
             cur_metrics['loss'], prev_metrics['loss'])
         ui_checkpoint = saved_path or prev_path
-        validation_state = (
-            'provisional background-only validation'
-            if cur_metrics['foreground_defined'] == 0
-            else 'foreground-informed validation')
+        if cur_metrics['foreground_defined'] == 0:
+            validation_state = 'provisional background-only validation'
+        elif (self.validation_foreground_file_count
+              < self.min_foreground_val_files_for_rollback):
+            validation_state = (
+                'sparse foreground validation; '
+                f'{self.validation_foreground_file_count}/'
+                f'{self.min_foreground_val_files_for_rollback} '
+                'foreground-bearing files; rollback deferred')
+        else:
+            validation_state = (
+                'foreground-informed validation; '
+                f'{self.validation_foreground_file_count} '
+                'foreground-bearing files')
         if saved_path:
             self.candidate_worse_epochs = 0
             checkpoint_message = (
@@ -702,7 +730,27 @@ class Trainer():
         # is beginning to learn foreground.
         if not self.validation_has_foreground:
             self.candidate_worse_epochs = 0
+            self.rollback_deferred_foreground_count = None
             return False
+
+        foreground_file_count = getattr(
+            self, 'validation_foreground_file_count', 1)
+        minimum_file_count = getattr(
+            self, 'min_foreground_val_files_for_rollback', 2)
+        if foreground_file_count < minimum_file_count:
+            self.candidate_worse_epochs = 0
+            if (self.rollback_deferred_foreground_count
+                    != foreground_file_count):
+                message = (
+                    'Automatic candidate rollback deferred: validation has '
+                    f'{foreground_file_count} foreground-bearing annotation(s); '
+                    f'need at least {minimum_file_count}')
+                print(message, flush=True)
+                self.log(message)
+                self.write_message(message)
+                self.rollback_deferred_foreground_count = foreground_file_count
+            return False
+        self.rollback_deferred_foreground_count = None
         if not (np.isfinite(cur_loss) and np.isfinite(ui_loss)):
             self.candidate_worse_epochs = 0
             return False

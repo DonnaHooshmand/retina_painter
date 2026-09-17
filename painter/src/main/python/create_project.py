@@ -29,7 +29,8 @@ from im_utils import is_image
 import file_utils
 from name_edit_widget import NameEditWidget
 from palette import PaletteEditWidget
-from project_order import fixed_train_val_split, seeded_file_order
+from project_order import (fixed_train_val_split, manifest_file_order,
+                           seeded_file_order)
 
 class CreateProjectWidget(QtWidgets.QWidget):
 
@@ -305,6 +306,8 @@ class CreateProjectWidget(QtWidgets.QWidget):
         os.makedirs(self.sync_dir / project_location / 'models')
         os.makedirs(self.sync_dir / project_location / 'messages')
         os.makedirs(self.sync_dir / project_location / 'logs')
+        os.makedirs(self.sync_dir / project_location / 'reviews')
+        os.makedirs(self.sync_dir / project_location / 'review_exports')
 
         if self.use_random_weights:
             original_model_file = 'random weights'
@@ -324,7 +327,19 @@ class CreateProjectWidget(QtWidgets.QWidget):
         # images only
         all_fnames = [a for a in all_fnames if is_image(a)]
 
-        all_fnames = seeded_file_order(all_fnames, self.image_order_seed)
+        manifest_order, manifest_path = manifest_file_order(
+            dataset_path, all_fnames)
+        if manifest_order is None:
+            all_fnames = seeded_file_order(all_fnames, self.image_order_seed)
+            image_order_method = 'seeded_shuffle_v1'
+            split_method = 'seeded_order_5_train_to_1_val_v1'
+        else:
+            # The manifest rank is already a reproducible random order. Using
+            # it directly guarantees that the 150-image project is the exact
+            # prefix of the 200-, 250-, ..., 600-image projects.
+            all_fnames = manifest_order
+            image_order_method = 'manifest_rank_v1'
+            split_method = 'manifest_rank_5_train_to_1_val_v1'
         train_fnames, val_fnames = fixed_train_val_split(all_fnames)
 
         dataset_abs_path = os.path.abspath(dataset_path)
@@ -332,6 +347,10 @@ class CreateProjectWidget(QtWidgets.QWidget):
         # remove the sync_dir/datasets part from the initial part of the dataset path.
         # as the server will prepend the 'datasets' directory when searching for the dataset.
         dataset_rel_path = os.path.relpath(dataset_abs_path, datasets_abs_path)
+        manifest_rel_path = None
+        if manifest_path is not None:
+            manifest_rel_path = os.path.relpath(
+                os.path.abspath(manifest_path), datasets_abs_path)
 
         # create project file.
         project_info = {
@@ -340,12 +359,18 @@ class CreateProjectWidget(QtWidgets.QWidget):
             'original_model_file': original_model_file,
             'location': str(PurePosixPath(project_location)),
             'file_names': all_fnames,
+            'image_order_method': image_order_method,
+            'dataset_manifest': (
+                str(PurePosixPath(manifest_rel_path))
+                if manifest_rel_path is not None else None),
             'image_order_seed': self.image_order_seed,
             'training_seed': self.image_order_seed,
             'train_file_names': train_fnames,
             'val_file_names': val_fnames,
-            'split_method': 'seeded_order_5_train_to_1_val_v1',
-            'model_type': self.model_type
+            'split_method': split_method,
+            'model_type': self.model_type,
+            'review_schema_version': 1,
+            'auto_start_training_after_reviews': 10
         }
         # 'classes': self.palette_edit_widget.get_brush_data()
         with open(proj_file_path, 'w') as json_file:

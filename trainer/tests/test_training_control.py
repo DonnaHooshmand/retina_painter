@@ -93,6 +93,47 @@ def test_continuous_loss_improves_before_hard_f1_crosses_threshold():
     assert improving_loss < low_probability_loss
 
 
+def test_validation_counts_foreground_bearing_files(tmp_path, monkeypatch):
+    val_dir = tmp_path / 'val'
+    dataset_dir = tmp_path / 'dataset'
+    val_dir.mkdir()
+    dataset_dir.mkdir()
+    filenames = ['foreground.png', 'background.png', 'mixed.png']
+    for filename in filenames:
+        (val_dir / filename).touch()
+        (dataset_dir / filename).touch()
+
+    annotations = {}
+    foreground = np.zeros((4, 4, 3), dtype=np.uint8)
+    foreground[1, 1, 0] = 255
+    annotations['foreground.png'] = foreground
+    background = np.zeros((4, 4, 3), dtype=np.uint8)
+    background[1, 1, 1] = 255
+    annotations['background.png'] = background
+    mixed = np.zeros((4, 4, 3), dtype=np.uint8)
+    mixed[1, 1, 0] = 255
+    mixed[2, 2, 1] = 255
+    annotations['mixed.png'] = mixed
+
+    monkeypatch.setattr(
+        model_utils, 'imread',
+        lambda path: annotations[os.path.basename(path)])
+    monkeypatch.setattr(
+        model_utils.im_utils, 'load_image',
+        lambda _path: np.zeros((4, 4, 3), dtype=np.uint8))
+    monkeypatch.setattr(
+        model_utils, 'unet_segment',
+        lambda _cnn, image, _bs, _in_w, _out_w, threshold=None:
+        np.zeros(image.shape[:2], dtype=np.float32))
+
+    metrics = model_utils.get_val_metrics(
+        torch.nn.Linear(2, 2), str(val_dir), str(dataset_dir),
+        in_w=4, out_w=4, bs=1)
+
+    assert metrics['foreground_file_count'] == 2
+    assert metrics['background_file_count'] == 2
+
+
 def test_checkpoint_promotion_uses_lower_continuous_loss(tmp_path):
     previous_path = tmp_path / '000001_1.pkl'
     previous_path.write_bytes(b'previous')
@@ -419,8 +460,11 @@ def test_candidate_rolls_back_after_consecutive_worse_epochs(
     trainer.optimizer = object()
     trainer.min_val_loss_delta = 1e-4
     trainer.candidate_rollback_patience = 3
+    trainer.min_foreground_val_files_for_rollback = 2
     trainer.candidate_worse_epochs = 0
     trainer.validation_has_foreground = True
+    trainer.validation_foreground_file_count = 2
+    trainer.rollback_deferred_foreground_count = None
     trainer.log = lambda _message: None
     trainer.write_message = lambda _message: None
     ui_model = torch.nn.Linear(2, 2)
@@ -450,14 +494,41 @@ def test_background_only_validation_never_rolls_back_candidate(tmp_path):
     trainer.model = torch.nn.Linear(2, 2)
     trainer.min_val_loss_delta = 1e-4
     trainer.candidate_rollback_patience = 1
+    trainer.min_foreground_val_files_for_rollback = 2
     trainer.candidate_worse_epochs = 4
     trainer.validation_has_foreground = False
+    trainer.validation_foreground_file_count = 0
+    trainer.rollback_deferred_foreground_count = None
 
     assert not trainer._rollback_worse_candidate(
         cur_loss=1.0, ui_loss=0.5,
         ui_model=torch.nn.Linear(2, 2),
         ui_checkpoint_path=str(tmp_path / 'best.pkl'))
     assert trainer.candidate_worse_epochs == 0
+
+
+def test_single_foreground_validation_file_defers_candidate_rollback(
+        tmp_path):
+    trainer = object.__new__(Trainer)
+    trainer.model_type = 'unet'
+    trainer.model = torch.nn.Linear(2, 2)
+    trainer.min_val_loss_delta = 1e-4
+    trainer.candidate_rollback_patience = 1
+    trainer.min_foreground_val_files_for_rollback = 2
+    trainer.candidate_worse_epochs = 4
+    trainer.validation_has_foreground = True
+    trainer.validation_foreground_file_count = 1
+    trainer.rollback_deferred_foreground_count = None
+    messages = []
+    trainer.log = messages.append
+    trainer.write_message = messages.append
+
+    assert not trainer._rollback_worse_candidate(
+        cur_loss=1.0, ui_loss=0.5,
+        ui_model=torch.nn.Linear(2, 2),
+        ui_checkpoint_path=str(tmp_path / 'best.pkl'))
+    assert trainer.candidate_worse_epochs == 0
+    assert any('need at least 2' in message for message in messages)
 
 
 def test_annotation_change_restarts_candidate_rollback_patience(tmp_path):
@@ -476,10 +547,12 @@ def test_annotation_change_restarts_candidate_rollback_patience(tmp_path):
     trainer.candidate_worse_epochs = 2
     trainer.best_val_loss = 0.25
     trainer.warned_no_val_foreground = True
+    trainer.rollback_deferred_foreground_count = 1
 
     assert trainer.reset_progress_if_annots_changed()
     assert trainer.epochs_without_progress == 0
     assert trainer.candidate_worse_epochs == 0
+    assert trainer.rollback_deferred_foreground_count is None
 
 
 @pytest.mark.parametrize('was_training', [True, False])

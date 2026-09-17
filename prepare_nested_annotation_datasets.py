@@ -216,13 +216,34 @@ The seed and each filename are hashed to create one reproducible random order.
 Folder N contains ranks 1 through N. Therefore every smaller folder is an
 exact subset of every larger folder. Images are independent copies, not links.
 
-In RetinaPainter, select the numeric child folder (for example, 150 or 600),
-not this parent directory. Keep manifest.csv and dataset_metadata.json with
-the collection; they freeze the selection and record provenance.
+Folder contents and intended use:
+- 150 contains manifest ranks 1-150.
+- 200 contains ranks 1-200, including every image in 150.
+- Each later folder adds the next 50 ranks through 600.
+- The folders support nested sample-size experiments. They are not ten
+  independent random samples.
+
+For clinician collection, create one RetinaPainter project per doctor using
+the 600 folder. Annotate each scan once. Use manifest rank later to derive the
+150, 200, ..., 550 analysis subsets from those same reviews; do not ask a
+doctor to annotate every numeric folder separately. Keep annotations and
+exports in the RetinaPainter project directory and do not edit these dataset
+image copies.
+
+RetinaPainter detects this parent manifest when a project is created from a
+numeric child folder and uses manifest rank as its navigation order. Thus the
+first 150 images of every larger trial exactly match the ordered 150 trial.
+The project trial seed still controls model and training randomness.
+
+manifest.csv records rank, the first subset containing each image, patient ID,
+eye, byte size, hash, and original source path. dataset_metadata.json records
+the construction settings. Keep both files with the collection because they
+freeze selection and provenance.
 
 The selection is image-level, not patient-grouped. Before research model
 evaluation, assign train/validation/test partitions by patient_id from the
-manifest so images from one patient cannot cross evaluation boundaries.
+manifest so images from one patient cannot cross evaluation boundaries. This
+collection is not the final held-out test set.
 """
     atomic_write_text(output / "README.txt", readme)
 

@@ -187,6 +187,8 @@ def get_val_metrics(cnn, val_annot_dir, dataset_dir, in_w, out_w, bs):
     soft_pred_sum = 0.0
     foreground_defined = 0
     background_defined = 0
+    foreground_file_count = 0
+    background_file_count = 0
     ce_sum = 0.0
     for fname in fnames:
         annot_path = os.path.join(val_annot_dir,
@@ -206,6 +208,8 @@ def get_val_metrics(cnn, val_annot_dir, dataset_dir, in_w, out_w, bs):
         annot = np.array(annot)
         foreground = annot[:, :, 0].astype(bool).astype(int)
         background = annot[:, :, 1].astype(bool).astype(int)
+        foreground_file_count += int(np.any(foreground))
+        background_file_count += int(np.any(background))
         image_path_part = os.path.join(dataset_dir, os.path.splitext(fname)[0])
 
         # Use glob.escape to allow arbitrary strings in file paths,
@@ -254,6 +258,8 @@ def get_val_metrics(cnn, val_annot_dir, dataset_dir, in_w, out_w, bs):
                           loss=val_loss)
     metrics['foreground_defined'] = foreground_defined
     metrics['background_defined'] = background_defined
+    metrics['foreground_file_count'] = foreground_file_count
+    metrics['background_file_count'] = background_file_count
     return metrics
 
 def save_if_better(model_dir, cur_model, prev_model_path,
