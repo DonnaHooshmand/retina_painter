@@ -2,11 +2,221 @@
 
 This file provides guidance to coding agents working with code in this repository.
 
+Do not commit anything; the user makes all commits. Preserve existing uncommitted
+work. The working branch at the 2026-10-21 handoff was `review-reference-ui`;
+inspect the current checkout before making changes. The proposal describes the
+research direction, but justified improvements may depart from it. Distinguish
+implemented features, planned work, and experimentally demonstrated results.
+
+## Local clinical data and curated dataset location
+
+The user requires clinical images, overlays, patient identifiers, and raw clinical
+records to remain local and out of assistant context, tool output, and cloud
+services. Process real data with local scripts that return aggregate counts only;
+do not view real scans through assistant image or screenshot tools. Use synthetic
+images for tests. Do not delete or rewrite source projects while preparing data.
+
+The user's annotation practice datasets follow the layout of
+`D:\RootPainterSync\curated_datasets\Jon_611_Raphael_612`: clean `images/` plus
+matching doctor reference overlays and ground-truth masks. The earlier practice
+bundle used the 300 completed reviews in `Raphael_091726` and was created by
+`prepare_practice_review_dataset.py`. The current merged version and separate
+prepared project are described below. Prior answers must never be preloaded
+into a fresh project's editable annotations, decisions, or models.
+Preserve verified patient assignments and uncertainty, holding unmapped scans
+out of the fresh project. This is distinct from the earlier 613-image frozen
+replay export produced by `prepare_curated_training_dataset.py`, which was not
+the fresh annotation dataset the user requested. A new folder does not make
+previously used development patients an untouched final test cohort.
+
+The current merged reference version is
+`D:\RootPainterSync\curated_datasets\Raphael_Updated_20261021_v1`: 316 unique
+scans from the original 300 reviews and 69 frozen follow-up reviews. Keep this
+version unchanged. `prepare_patient_practice_project.py` creates a separate
+blank project using its clean images and the earlier verified patient-assignment
+manifest. The current allocation is 255 training scans and 59 validation scans,
+with two unresolved identities held outside navigation. It preserves uncertain
+reviews, uses explicit train/val filename lists, and starts with a documented
+positive/negative warm-up. No prior masks, decisions, or model weights enter
+the editable session. Use an absolute local dataset path for this prepared
+project: the current client does not normalize `..` before navigation lookup.
+
+## Current handoff and next work (verified 2026-10-21)
+
+Use these existing local artifacts; do not rebuild them without a concrete need:
+
+- Reference dataset:
+  `D:\RootPainterSync\curated_datasets\Raphael_Updated_20261021_v1`
+- Clean scans: its `images/` folder.
+- Human reference pictures: its `ground_truth_audit_overlays/` folder, opened
+  separately beside RetinaPainter. Red is explicit clinician foreground; cyan
+  is retained model foreground from the completed review. This checkout has no
+  built-in prior-label/reference panel.
+- Reviewed masks: `ground_truth_binary/` (0/255) and `ground_truth/` (RGBA).
+  `doctor_foreground_masks/` contains sparse red marks only. Untouched pixels
+  in those sparse masks are unknown.
+- Current references and provenance: `manifest.csv`, `ground_truth_status.csv`,
+  `review_history.csv`, and `provenance/`. The reference dataset is immutable;
+  changed references require a new version.
+- Prepared editable project:
+  `D:\RootPainterSync\projects\Raphael_Updated_20261021_practice_v1\Raphael_Updated_20261021_practice_v1.seg_proj`
+- Sync directory: `D:\RootPainterSync`.
+
+The reference dataset contains 316 scans: 14 present, 286 absent, 16 uncertain.
+`prepare_updated_review_dataset.py` merged the original 300 reviews with 69
+frozen follow-up reviews by image SHA-256. The follow-up supersedes the earlier
+reference for 53 repeated scans and adds 16 image contents. Both readings are
+preserved. There are 300 definitive reviewed masks; uncertain scans retain
+reference pictures without a definitive mask or binary diagnosis. Reconstructed
+references may include retained model predictions and are not independently
+adjudicated exhaustive contours.
+
+The original source project is `D:\RootPainterSync\projects\Raphael_091726`.
+The frozen follow-up is
+`D:\RootPainterSync\projects\Raphael_091726_update\review_exports\20261021_frozen_v1`.
+Keep both unchanged. The older 613-image export's manifest at
+`D:\RootPainterSync\datasets\curated\_datasets\RIPL_Development_20260925_v1\manifest.csv`
+was used only as the verified patient-assignment source for the new project;
+it is not the current practice image collection.
+
+Open the prepared `.seg_proj` using **Project > Open project**, not New Project.
+`prepare_patient_practice_project.py` preserved the verified assignments:
+
+| Partition | Scans | Patients | Present | Absent | Uncertain |
+|---|---:|---:|---:|---:|---:|
+| Train | 255 | 112 | 12 | 232 | 11 |
+| Validation | 59 | 28 | 2 | 53 | 4 |
+| Identity hold | 2 | Unresolved | 0 | 1 | 1 |
+
+Train and validation share zero patients. Identity holds are excluded from
+project navigation but remain in the reference dataset. Project-local
+`manifest.csv`, `patient_assignments.csv`, `held_images.csv`, `README.txt`, and
+`preparation_metadata.json` record the allocation and initial state. Reference
+decisions in these preparation tables are not loaded as new completed reviews.
+
+The prepared project uses fresh U-Net weights, training seed 0, and automatic
+training after the first ten ordered reviews are completed and the user advances.
+Its initial ten are deliberately label-informed: two positive and four negative
+training scans, plus two positive and two negative validation scans. Remaining
+scans retain source rank. Do not describe this order as random evaluation.
+The trainer must be running, and both annotation partitions need painted pixels
+for optimization to proceed. An Absent decision alone adds no background pixels.
+An Uncertain decision does not exclude already painted pixels from the loss;
+leave ambiguous regions unpainted and retain uncertainty in review metadata.
+
+At the last check on 2026-10-21, the prepared project had zero completed reviews,
+zero annotation PNGs, and zero model files. Recheck aggregate local state before
+acting: the user may have annotated since this handoff. Never reset an existing
+session to reproduce that initial state.
+
+Immediate sequence:
+1. Verify project paths, trainer availability, and current session state locally.
+2. Help the user annotate the first ten scans and confirm automatic training,
+   actual epochs, and updated predictions after advancing.
+3. Continue another 10–20 scans to check red/green corrections, saving, stable
+   patient routing, and missed lesions or excessive false-positive regions.
+   Improvement is a question to measure, not a promised pilot outcome.
+4. Fix concrete workflow blockers before completing the larger session. Export
+   completed reviews to preserve decisions and reviewed snapshots.
+5. Implement/verify the clinical evaluation pipeline below before reporting
+   performance. Plan an untouched patient-separated final cohort for the paper.
+6. Compare architectures in separate fresh projects with consistent patient
+   assignments, annotation budgets, and evaluation rules. Do not replace the
+   current baseline with another architecture midway through training.
+
+Recent synthetic preparation checks passed: 21 cases in
+`painter/tests/test_updated_review_dataset.py` and 16 cases in
+`painter/tests/test_patient_practice_project.py`, including annotation routing
+and client/navigation/trainer path conversion. These verify workflow integrity,
+not clinical performance; no completed clinical benchmark is established here.
+
+### Friday positive-candidate session (2026-10-23)
+
+Prepared on 2026-10-21 for Raphael to annotate additional spreadsheet-positive
+scans, distinct from the 316-scan reference dataset and its practice project:
+
+- Dataset: `D:\RootPainterSync\curated_datasets\Raphael_Positive_20261023_v1`
+- Clean images: its `images/` folder.
+- Open project:
+  `D:\RootPainterSync\projects\Raphael_Positive_20261023_v1\Raphael_Positive_20261023_v1.seg_proj`
+- Builder: `prepare_positive_annotation_dataset.py`; synthetic tests:
+  `painter/tests/test_positive_annotation_dataset.py`.
+
+The user requested new spreadsheet-positive scans, spread across patients.
+After discussing 100 versus 200, the prepared project has 200 scans across 121
+patients; the first 100 are the priority batch and cover 100 distinct patients.
+Every selected scan has image-level RIPL=1 in the local workbook, but this is
+candidate selection, not a confirmed clinician diagnosis. Raphael must still
+be able to select Absent or Uncertain. No ground-truth masks or reference
+overlays exist for these new annotations yet; the ground_truth directory holds
+an explanatory README only. Do not manufacture masks from spreadsheet labels.
+
+Selection excluded all prior completed reviews and existing annotation files
+found in local projects, including conservative exclusion of empty annotation
+placeholders, by filename/stem and available source-image SHA-256. All such
+historical source images were available during preparation. Of 522 unique
+spreadsheet-positive scans, 187 were excluded for prior review/annotation and
+three for patient-identity mismatch, leaving 332 eligible scans across 121
+patients. No source projects were modified.
+
+The new project fixes 163 training scans (97 patients) and 37 validation scans
+(24 patients), with zero patient overlap. Existing verified patient roles are
+preserved for 194 scans; six scans receive seeded roles for newly encountered
+patients. The first ten have eight training and two validation patients. It uses
+fresh U-Net weights, seed 0, empty annotation/review/model directories, and
+automatic training after those ten reviews are completed and the user advances.
+Both partitions still need painted pixels and a running trainer. Prior labels
+in manifest.csv are audit metadata, not completed review decisions.
+
+This positive-only session adds development annotations; it cannot measure
+specificity or population prevalence and is not an untouched final test cohort.
+Export completed reviews at the end, then curate a new reference version from
+that export. Recheck live project state before acting and never reset it.
+
+### Pre-Friday workflow verification (2026-10-21)
+
+Completed in an isolated synthetic sync directory using the actual Qt painter
+and local CUDA U-Net trainer. Ten completed reviews triggered one automatic
+training instruction; the normal 612-crop epoch at patch size 572 completed,
+validation promoted a checkpoint, and fresh predictions changed and contained
+foreground. Saving, closing/reopening, prediction/status display, and export of
+12 reviews passed; every exported mask matched its saved review snapshots.
+This verifies the workflow, not clinical accuracy. Aggregate file fingerprints
+confirmed the Friday dataset and project were unchanged.
+
+Fixes made during this check:
+- Windows source-mode trainer discovery now uses `trainer/env/Scripts/python.exe`
+  and runs from `trainer/src`. The local painter venv was repaired to use the
+  installed Python 3.11.9; no packages were downloaded.
+- Automatic save/navigation/close/export of an unchanged completed review now
+  preserves its original snapshots, timestamp, and reconstruction mode. Changing
+  corrections or decisions, or unchecking/rechecking completion, deliberately
+  snapshots the current prediction. A training start alone must not replace a
+  previously completed annotation-only reference.
+- Status files are processed in modification-time order, with a watermark so a
+  locked old message cannot overwrite a newer displayed status. The first GUI
+  integration check exposed this bug; verification passed after the fix using
+  the same trained synthetic outputs.
+
+The focused painter suite passed 41 tests, including the new
+`test_review_gui_saving.py` and `test_server_manager_launch.py`. The opt-in
+`trainer/tests/smoke_annotation_session.py` orchestrates the real trainer and
+`painter/tests/smoke_annotation_session.py` Qt workflow. It requires a new,
+explicitly synthetic sync directory; never pass a clinical sync directory.
+Restart the application from this updated source checkout to use these fixes;
+existing packaged executables were not rebuilt.
+
 ## Project Overview
 
 **RetinaPainter** is a fork of [RootPainter](https://github.com/Abe404/root_painter) adapted for retinal OCT biomarker detection. It uses a client-server architecture where the **painter** (PyQt5 GUI client) and **trainer** (PyTorch server) communicate via JSON instruction files in a shared filesystem directory (the "sync directory"). No network protocol is used—communication works over local filesystem, sshfs, Dropbox, or Google Drive.
 
-The key departure from RootPainter is the model backend: instead of a U-Net trained from scratch, RetinaPainter uses the **RETFound ViT-Large foundation model** (pre-trained on 1.6M retinal images) as an encoder, with a lightweight convolutional decoder added for pixel-level segmentation. This enables clinically useful models from far fewer labeled examples (~100–200 images vs. thousands).
+RetinaPainter retains U-Net trained from scratch and adds **RETFound ViT-Large**
+encoder backends with plain and RFA segmentation decoders. The current prepared
+pilot uses U-Net. Foundation-model pretraining is a candidate route to reducing
+annotation needs; improved RIPL performance or a specific required sample size
+has not been demonstrated by the preparation work. The practical goal is RIPL
+localization/segmentation from sparse corrections, with B-scan detection as the
+primary clinical endpoint and contour agreement as a secondary diagnostic.
 
 ## Architecture
 
@@ -48,11 +258,26 @@ sparse training annotation stay free of label text. See
 `docs/clinician_review_workflow.md`.
 
 The fixed seeded split is per-file and still has **no patient-group awareness**. For patient-separated research splits:
-- **Pre-populate empty annotation PNGs** at the correct train/val location before opening the painter. The painter's `get_annot_path` ([file_utils.py:58](painter/src/main/python/file_utils.py:58)) finds the existing file and `maybe_save_annotation` overwrites in place, never invoking the 5:1 router. The `prepare_annotations.py` script in the user's data-prep tooling does this.
-- **Manually move files** between `annotations/train/` and `annotations/val/` after sessions to enforce the desired split.
-- **Planned: explicit train/val source folders** — see the `train-val-split` branch. A "New Project" checkbox lets the user point at separate train and val image directories so the painter routes annotations by source folder rather than by count. Eliminates the workaround entirely.
 
-This concern only affects the **internal validation signal during training** (model selection, early stopping). The held-out *test* set is always a separate physical folder outside the painter project, so its integrity is preserved automatically.
+- **Prefer explicit project lists:** prepare `train_file_names` and
+  `val_file_names` from verified patient assignments, with disjoint membership
+  covering every active filename. The current painter honors these lists even
+  when annotation folders are empty; blank placeholder PNGs are unnecessary.
+- **Legacy compatibility only:** pre-populated annotation PNGs are overwritten
+  in place by `get_annot_path` and `maybe_save_annotation`. The current prepared
+  project uses explicit lists and empty folders, so do not add placeholders.
+  Moving annotations after a model has trained does not undo patient exposure;
+  establish assignments before training instead of repairing a split afterwards.
+- **Planned: explicit train/val source folders** — see the `train-val-split`
+  branch. This feature is absent from the current checkout. A proposed New
+  Project checkbox would let the user select separate image directories and
+  route annotations by source folder. Patient separation would still need to
+  be verified when preparing those directories.
+
+Patient separation must be verified across training, validation, and any final
+test cohort, including historical development exposure. A separate test folder
+alone does not guarantee independence. The current prepared project has internal
+validation only; no untouched final test cohort has been established.
 
 **Interactive checkpoint control:** Before validation contains foreground,
 same-project UI predictions use explicitly provisional live weights only while
@@ -74,7 +299,7 @@ current validation set.
 ## Clinical Evaluation Contract
 
 RetinaPainter's primary RIPL outcome is **B-scan-level detection**, not contour
-agreement. A held-out B-scan is positive when the clinician gold standard says
+agreement. A held-out B-scan is positive when the clinician reference standard says
 that at least one RIPL is present. Final evaluation must report the raw
 TP/FP/FN/TN confusion matrix plus sensitivity, specificity, PPV, NPV, balanced
 accuracy, and accuracy. Pixel Dice/IoU are secondary engineering diagnostics
@@ -91,6 +316,32 @@ B-scan false negatives or true negatives.
 If individual lesions are evaluated later, use one-to-one lesion matching and
 report lesion TP/FP/FN, sensitivity, precision, and false positives per B-scan;
 lesion-level TN is undefined.
+
+**Implementation gap checked 2026-10-21:** no completed clinical B-scan evaluator
+or lesion overlap/distance-tolerance matcher was found in the repository.
+`trainer/src/metrics.py` reports supervised-pixel metrics.
+`painter/src/main/python/plot_seg_metrics.py` compares model predictions with
+their sparsely corrected versions; this is correction-agreement analysis,
+not an independent clinical benchmark. Verify or implement the missing pipeline
+and synthetic tests before interpreting these outputs as clinical outcomes.
+
+One negative scan with two false predicted regions contributes one B-scan FP;
+it may contribute two lesion FPs in a separately defined lesion analysis. A
+correct scan-level positive decision does not establish correct localization.
+Acceptable localization should use a justified, explicit overlap/proximity rule
+appropriate to sparse reference marks and image resolution; no clinically
+validated pixel-distance or overlap tolerance has been established here.
+Select probability thresholds, component filters, and localization rules using
+development/validation data and freeze them before final test evaluation.
+
+Preserve uncertain scans and report them separately from the binary confusion
+matrix unless a justified adjudication protocol resolves their labels. Do not
+turn uncertain or untouched regions into negatives. Report denominators and
+uncertainty: the current validation set contains only two positive scans, so
+sensitivity estimates are unstable. Document sample selection and development
+history; do not treat this selected collection's positive fraction as population
+prevalence or call its clinician-reviewed reconstructions independently drawn
+gold-standard contours.
 
 ## Models
 
@@ -201,7 +452,7 @@ cd trainer/src && python -u main.py --syncdir ~/root_painter_sync
 # RETFound plain decoder
 cd trainer/src && python -u main.py --syncdir ~/root_painter_sync --model-type retfound
 
-# RETFound + RFA-U-Net attention decoder (recommended for new projects)
+# RETFound + RFA-U-Net attention decoder (separate architecture comparison)
 cd trainer/src && python -u main.py --syncdir ~/root_painter_sync --model-type retfound_rfa
 
 # Optional loss ablation: same RFA architecture with Tversky
@@ -362,7 +613,13 @@ Based on: Hayati, A. et al. (2025). RFA-U-Net: A Foundation Model-Driven Approac
 
 ### Annotation semantics (sparse supervision policy)
 
-RetinaPainter uses **sparse corrective annotation**: only pixels the clinician explicitly painted as foreground or background are supervised. Untouched pixels are unknown — they must contribute zero loss and zero gradient. A forthcoming `unsure` annotation category will also be excluded from loss while retaining ambiguity metadata.
+RetinaPainter uses **sparse corrective annotation**: only pixels the clinician
+explicitly painted as foreground or background are supervised. Untouched pixels
+are unknown and must contribute zero loss and zero gradient. A dedicated
+pixel-level `unsure` category with exclusion from loss is planned, not implemented.
+The existing scan-level `uncertain` review decision is separate metadata; the
+trainer reads red/green annotation PNGs and does not automatically exclude those
+painted pixels because of that decision.
 
 **Phase 1 status — DONE (2026-04-27).** The masked loss path is now correct: `combined_loss` and `tversky_loss` accept a `mask` argument and apply it inside the loss; the old `outputs[:, c] *= defined_tiles` trick was leaky (softmax(0,0) = (0.5, 0.5) still incurred a constant CE penalty per untouched pixel). `datasets.py` now uses `np.logical_or(foreground, background)` for the supervision mask, with an assertion that fg/bg never overlap. `model_utils.unet_segment` also got a defensive `cnn = cnn.to(device)` so any caller that forgets to move a `DataParallel`-wrapped model to the inference device doesn't trip a CPU-vs-MPS/CUDA mismatch on RETFound's registered ImageNet-normalization buffers. Regression tests live at `trainer/tests/test_loss_masking.py`; UNet smoke at `trainer/tests/smoke_phase1.py`; RETFound + RETFound-RFA GPU smoke at `trainer/tests/smoke_phase1_gpu.py`. Expected post-fix training loss is lower by an amount that scales roughly linearly with the untouched fraction of each tile — that is **not** a regression. (Measured on a 50%-untouched synthetic tile: combined_loss drops ~0.14 nats, tversky_loss drops ~0.06 nats.)
 

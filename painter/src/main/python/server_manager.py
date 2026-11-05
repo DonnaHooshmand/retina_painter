@@ -3,8 +3,8 @@ server_manager.py
 
 RetinaPainter Workstation MVP:
 - Optionally launches a bundled trainer/server executable from the GUI.
-- Clean dev mode: if running from a source checkout with ../trainer/env/bin/python,
-  launch trainer via that venv (no wrapper scripts).
+- Clean dev mode: launch the trainer using its source checkout venv
+  (env/Scripts/python.exe on Windows, env/bin/python on macOS/Linux).
 
 Contract:
 - Trainer supports: --syncdir <path>
@@ -91,7 +91,8 @@ def find_dev_trainer_launch() -> Optional[LaunchSpec]:
     """
     Dev mode: assumes repo layout:
       <repo>/painter/...
-      <repo>/trainer/env/bin/python
+      <repo>/trainer/env/Scripts/python.exe  (Windows)
+      <repo>/trainer/env/bin/python         (macOS/Linux)
       <repo>/trainer/src/main.py
 
     Returns a LaunchSpec that runs the trainer using its venv python.
@@ -101,7 +102,10 @@ def find_dev_trainer_launch() -> Optional[LaunchSpec]:
         return None
 
     trainer_dir = repo_root / "trainer"
-    py = trainer_dir / "env" / "bin" / "python"
+    if sys.platform.startswith("win"):
+        py = trainer_dir / "env" / "Scripts" / "python.exe"
+    else:
+        py = trainer_dir / "env" / "bin" / "python"
     main_py = trainer_dir / "src" / "main.py"
 
     if py.is_file() and main_py.is_file():
@@ -110,7 +114,7 @@ def find_dev_trainer_launch() -> Optional[LaunchSpec]:
         return LaunchSpec(
             program=py,
             args_prefix=["-u", str(main_py), "--syncdir"],
-            working_dir=trainer_dir,
+            working_dir=main_py.parent,
         )
 
     return None
@@ -121,7 +125,7 @@ def find_trainer_launch() -> Optional[LaunchSpec]:
     Preferred order:
       1) Explicit override via env var ROOTPAINTER_TRAINER (points to an executable)
       2) Bundled trainer next to GUI executable
-      3) Dev trainer in repo checkout (trainer/env/bin/python + trainer/src/main.py)
+      3) Dev trainer in repo checkout (native trainer venv + trainer/src/main.py)
     """
     override = os.environ.get("ROOTPAINTER_TRAINER")
     if override:

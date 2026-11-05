@@ -233,6 +233,7 @@ class RetinaPainter(QtWidgets.QMainWindow):
         self.model_dir = self.proj_location / 'models'
 
         self.message_dir = self.proj_location / 'messages'
+        self.last_message_key = None
         # None means the project was created before the model-type dropdown;
         # instructions will omit model_type so the trainer keeps its CLI default.
         self.model_type = settings.get('model_type', None)
@@ -864,6 +865,10 @@ class RetinaPainter(QtWidgets.QMainWindow):
         self.scene = scene
         self.nav = NavWidget(self.image_fnames, [self.train_annot_dir, self.val_annot_dir])
         self.review_widget = ReviewWidget()
+        self.review_widget.decision_combo.currentIndexChanged.connect(
+            self.review_controls_changed)
+        self.review_widget.complete_checkbox.toggled.connect(
+            self.review_controls_changed)
         self.update_file(self.image_path)
 
         # bottom bar
@@ -946,24 +951,7 @@ class RetinaPainter(QtWidgets.QMainWindow):
         print('Starting watch for changes')
         self.tracking = True
         def check():
-            # check for any messages
-            messages = ls(str(self.message_dir))
-            for m in messages:
-                if hasattr(self, 'messages_label'):
-                    self.messages_label.setText(m)
-                try:
-                    fpath = os.path.join(self.message_dir, m)
-                    # added check for it being a file because google drive for desktop on mac sometimes 
-                    # gives a list of files from os.listdir and then those files cannot be seen in either finder
-                    # and os.remove will complain that there is no such file..
-                    if os.path.isfile(fpath):
-                        # Added try catch because this error happened (very rarely)
-                        # PermissionError: [WinError 32]
-                        # The process cannot access the file because it is
-                        # being used by another process
-                        os.remove(fpath)
-                except Exception as e:
-                    print('Caught exception when trying to detele msg', e)
+            self.update_training_messages()
             if hasattr(self, 'seg_path') and os.path.isfile(self.seg_path):
                 try:
                     # seg mtime is not actually used any more.
@@ -990,6 +978,41 @@ class RetinaPainter(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(500, check)
 
 
+    def update_training_messages(self):
+        """Consume status files in timestamp order, retaining the newest status."""
+        try:
+            names = ls(str(self.message_dir))
+        except OSError:
+            # A temporarily unavailable sync folder must not stop the watcher.
+            return
+        messages = []
+        for name in names:
+            path = self.message_dir / name
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+            except OSError:
+                # Another window or sync process may already have consumed it.
+                continue
+            messages.append((stat.st_mtime_ns, name, path))
+        for modified, name, path in sorted(messages):
+            try:
+                if path.stat().st_mtime_ns != modified:
+                    # The trainer rewrote this message after the listing; leave
+                    # that newer instance for the next poll.
+                    continue
+                key = (modified, name)
+                if self.last_message_key is None or key > self.last_message_key:
+                    if hasattr(self, 'messages_label'):
+                        self.messages_label.setText(name)
+                        self.last_message_key = key
+                os.remove(path)
+            except OSError:
+                # Locked files are retried, but their old status cannot replace
+                # a newer status that has already been displayed.
+                continue
+
     def close_project_window(self):
         self.close()
         self.closed.emit()
@@ -1010,6 +1033,18 @@ class RetinaPainter(QtWidgets.QMainWindow):
             review.get('decision'), review.get('review_complete', False))
         self.review_widget.set_completed_count(
             completed_review_count(self.proj_location))
+        self.remember_current_review(review)
+
+    def review_controls_changed(self, _value):
+        """Distinguish an intentional rereview from an automatic save."""
+        self.review_controls_edited = True
+
+    def remember_current_review(self, review):
+        """Keep the displayed correction pixels and last saved review state."""
+        self.saved_review_filename = os.path.basename(self.image_path)
+        self.saved_review_record = review
+        self.saved_review_annotation = self.scene.annot_pixmap.toImage().copy()
+        self.review_controls_edited = False
 
     def save_current_review(self):
         """Persist review status and completed-review provenance snapshots."""
@@ -1018,8 +1053,19 @@ class RetinaPainter(QtWidgets.QMainWindow):
         image_filename = os.path.basename(self.image_path)
         decision = self.review_widget.decision()
         review_complete = self.review_widget.is_complete()
+        previous = getattr(self, 'saved_review_record', {})
+        if (getattr(self, 'saved_review_filename', None) == image_filename
+                and previous.get('review_complete')
+                and review_complete
+                and previous.get('decision') == decision
+                and not self.review_controls_edited
+                and self.scene.annot_pixmap.toImage() == self.saved_review_annotation):
+            # Navigation, close, and export all save the current scan. A newer
+            # prediction or training start alone must not silently replace the
+            # clinician's completed snapshot or its reconstruction policy.
+            return True
         try:
-            save_review(
+            record = save_review(
                 self.proj_location,
                 image_filename,
                 decision,
@@ -1032,14 +1078,16 @@ class RetinaPainter(QtWidgets.QMainWindow):
             # Never leave a record falsely marked complete when its provenance
             # snapshots could not be saved.
             self.review_widget.complete_checkbox.setChecked(False)
-            save_review(
+            record = save_review(
                 self.proj_location,
                 image_filename,
                 decision,
                 False)
+            self.remember_current_review(record)
             QtWidgets.QMessageBox.warning(
                 self, 'Review not marked complete', str(error))
             return False
+        self.remember_current_review(record)
         completed_count = completed_review_count(self.proj_location)
         self.review_widget.set_completed_count(completed_count)
         return True

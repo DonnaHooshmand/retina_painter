@@ -49,7 +49,13 @@ Saving a completed review records the decision in
 `reviews/review_records.json` and snapshots the displayed prediction and
 correction image under `reviews/`. These snapshots are hashed and are the
 inputs to export. Later live-model activity therefore cannot silently change
-the completed label. RetinaPainter also writes a labeled visual copy under
+the completed label. Navigating, closing, reopening, or exporting an unchanged
+completed review preserves its original snapshots, completion timestamp, and
+reconstruction mode, including annotation-only reviews made before training.
+To deliberately replace a completed review, edit its corrections or decision,
+or uncheck and recheck **Review complete** after reviewing the current prediction.
+The revised review then snapshots the current prediction and corrections.
+RetinaPainter also writes a labeled visual copy under
 `reviews/decision_previews/` for human sanity checking. The label appears only
 in that audit preview—not in the live UI, the source OCT, the sparse correction
 PNG, or any image supplied to the model.
