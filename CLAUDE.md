@@ -165,7 +165,7 @@ Use `-u` (unbuffered) so print statements appear immediately in the terminal.
 
 ## Testing
 
-Tests are in `trainer/tests/`. Run from that directory. Full fast trainer suite is 99 tests; runtime depends heavily on the available accelerator.
+Tests are in `trainer/tests/`. Run from that directory. Full fast trainer suite is 114 tests; runtime depends heavily on the available accelerator.
 
 ```bash
 cd trainer/tests
@@ -175,7 +175,7 @@ cd trainer/tests
 python -m pytest test_loss.py test_unet.py test_metrics.py test_loss_masking.py \
                   test_retfound.py test_retfound_rfa.py test_fundusegmenter.py \
                   test_instructions.py test_training_control.py \
-                  test_nested_annotation_datasets.py -v
+                  test_nested_annotation_datasets.py test_offline_experiments.py -v
 
 # Individual files
 python -m pytest test_retfound.py -v          # RETFound plain decoder
@@ -197,10 +197,39 @@ python -m pytest test_training.py -v -s
 - `test_metrics.py` (5 tests) — `get_metrics` returns 0.0 (not NaN) when there are no true positives, does not divide by zero when no pixels are defined, and passes the validation loss through.
 - `test_training_control.py` (22 tests) — trial seeding, RNG isolation, continuous-loss checkpoint promotion while hard F1 remains zero, background-only validation, deterministic fixed and adaptive correction-class sampling, background-loss-gated provisional UI warm-up, stable checkpoint routing, foreground-gated automatic rollback, rollback-grace restart after annotation updates, and U-Net discarded-border supervision.
 - `test_nested_annotation_datasets.py` (2 tests) — reproducible seeded ranking, strict subset nesting, exclusion handling, manifests, copy verification, and refusal to delete unexpected images.
+- `test_offline_experiments.py` (13 tests) — reference-mask decoding for both encodings (including the empty-red-channel trap), annotation writing matched to the trainer's channel decoding, sparse and dense project preparation with patient-split preservation and inflated-mask fallback, scan/lesion/pixel metrics, AUROC and Wilson intervals, paired comparison, evaluation-vs-painter inference parity, and offline-trainer isolation from the painter instruction queue.
 
 **End-to-end smoke scripts** (not collected by pytest, run manually):
 - `smoke_phase1.py` — UNet integration: 30-step training run, legacy-vs-fixed loss comparison across untouched-fraction settings, gradient isolation. Runs in ~30s on CPU.
 - `smoke_phase1_gpu.py` — RETFound + RETFound-RFA integration: same checks for both real model architectures. Auto-detects CUDA / MPS / CPU. Use `--use-real-weights` to also load the real RETFound checkpoint (slow). Run on a GPU machine for best results.
+
+**Two distinct modes of testing — know which one you need:**
+
+**Interactive testing (requires the painter GUI):** The painter is the only way to validate the live annotation-train-segment feedback loop. Run the painter (`cd painter/src/main/python && python main.py`) and the trainer together, annotate images with brush strokes, and observe segmentation overlays updating in real time. This is how to verify that overlay colours render correctly, that the corrective workflow feels responsive, that training restarts after new annotations, and that rollback/early-stopping behave correctly from a user perspective. Automated pytest tests cannot substitute for this — they verify code correctness (model shapes, loss values, gradient flow, training control logic) but cannot confirm anything visible in the UI.
+
+**Offline / conventional training experiments (no painter needed):** Pre-populate a project's `annotations/train/` and `annotations/val/` directories with annotation PNGs, then run the trainer and let it train to convergence. Use this for baseline comparisons (e.g. `retfound_rfa` vs. `unet`), ablations, and evaluating whether dense reviewed masks improve over sparse corrective strokes. No interactive annotation is involved — results are read from the trainer log (F1, validation loss per epoch) and from prediction PNGs saved to `<project>/segmentations/`.
+
+Offline experiments use the tools in `trainer/experiments/` (full guide: `docs/offline_experiments.md`). They run from any directory with the trainer venv active:
+
+```powershell
+cd trainer\experiments
+$ds = "D:\RootPainterSync\curated_datasets\Combined_Development_20261105_v1"
+python prepare_offline_project.py --dataset $ds --sync-dir D:\RootPainterSync --name NAME --model-type retfound_rfa --seed 0
+python -u run_offline_training.py --project D:\RootPainterSync\projects\NAME --gpu 0
+python evaluate_project.py --project D:\RootPainterSync\projects\NAME --gpu 0
+python compare_evaluations.py --a <evaluation dir A> --b <evaluation dir B>
+```
+
+- **`prepare_offline_project.py`** builds a painter-compatible project (normal `.seg_proj`, opens in the painter) whose train/val membership follows the dataset's patient-separated `split` column. `--supervision sparse` (default) copies the clinician strokes; `--supervision dense` supervises every pixel from the reviewed masks.
+- **`run_offline_training.py`** subclasses the production `Trainer` and calls `start_training` / `train_one_epoch` directly, so sampler, loss, optimizer, validation, checkpoint promotion, rollback and early stopping are unchanged. It never clears or polls the shared `<syncdir>/instructions` queue, so an open painter cannot disturb a run and one run per GPU (`--gpu`) can train in parallel. Create a `STOP` file in the project to end early; re-running resumes from the latest checkpoint. Logs: `<project>/logs/offline_history.jsonl`, `offline_server_log.txt`, `offline_run_summary.json`.
+- **`evaluate_project.py`** scores the validation-best checkpoint through the painter's own inference path (`model_utils.ensemble_foreground_probs`) and writes `metrics.json` + `per_image.csv` under `<project>/evaluation/`. It reports B-scan sensitivity/specificity (largest predicted component ≥ `--min-lesion-px`, default 25) with Wilson intervals and AUROC, lesion-level recall and false-positive blobs per scan, and pooled pixel precision/recall/F1 against the reviewed masks. Uncertain scans are excluded.
+- **`compare_evaluations.py`** gives B-minus-A differences with patient-level bootstrap intervals and an exact McNemar test.
+
+Evaluating the `val` split is a development comparison, not a held-out test: the checkpoint was selected on those scans, and the split has only 19 positives.
+
+**Reviewed masks are not uniformly "binary 0/255".** The 190 from `Raphael_Positive_Curated` are greyscale 0/255, but the 300 from `Raphael_Updated` are painter-segmentation RGBA — cyan `(0, 255, 255, 178)` on transparent, with an empty red channel. Reading channel 0 silently empties 14 positive masks, and copying one into `annotations/` turns lesion pixels into *background* strokes. Always decode with `trainer/experiments/mask_io.read_binary_mask`. Reviewed masks are also accepted *corrected predictions*, not certified contours: most positives are tight (median ~650 px), but two training masks cover 40–50% of the scan and nine exceed 5,000 px. Dense project preparation therefore falls back to the clinician's sparse strokes for any positive mask covering more than 1% of the scan or split into more than 10 components.
+
+Dense supervision moves from ~5% pixel coverage to 100%, adds stroke-free absent scans as fully supervised negatives, and changes the validation signal used for checkpoint selection. It is a training-policy change and should be evaluated deliberately, not assumed to be better.
 
 ## Linting
 
@@ -247,6 +276,7 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 ## Key Constraints
 
 - Do not include `Co-Authored-By` or any Claude attribution in commit messages
+- Clinical images and patient-level tables must not be printed into assistant output or uploaded to cloud services (see `docs/curated_training_dataset.md`). Scan filenames embed patient IDs. Dataset and experiment tools print aggregates only; do not open scan or mask images with an image viewer tool, and do not echo rows of the ground-truth CSVs or `per_image.csv`.
 - Python 3.11–3.12 required (`>=3.11,<3.13`)
 - Trainer imports are relative (e.g., `from unet import ...`), not package-qualified — tests and entry points run from `trainer/src/`
 - Batch size is auto-detected from GPU memory (CUDA/MPS/CPU fallback); retfound uses 1.5 GB/item estimate vs. 3.8 GB/item for unet
@@ -257,6 +287,19 @@ Outputs wheels to `./dist/`. After building, upload to a GitHub release and upda
 - When `in_w == out_w` (RETFound), `tile_pad = 0`. Guard any annotation crop with `if tile_pad > 0:` — Python's `x[0:-0]` is `x[0:0]` (empty), not a no-op.
 
 ## Current Development Status
+
+### Dataset (2026-11-05)
+
+Combined development dataset at `D:\RootPainterSync\curated_datasets\Combined_Development_20261105_v1`:
+- **516 images**, patient-separated train/val splits (no conflicts)
+- **103 present / 387 absent / 26 uncertain** decisions
+- **332 eligible sparse annotations** (red/green strokes from Raphael) — ready to use as-is in RetinaPainter
+- **490 reviewed binary reference masks** in `ground_truth/reviewed_masks/` — dense masks reconstructed from completed clinical reviews; not yet used in training. Two on-disk encodings (greyscale and painter-segmentation RGBA) — decode only with `trainer/experiments/mask_io.read_binary_mask` (see Testing → offline experiments)
+- **420 train images (132 patients) / 96 val images (31 patients)**
+- Standard format: `images/`, `annotations/train|val/`, `ground_truth/clinician_foreground/`, `ground_truth/known_pixels/`, `ground_truth/reviewed_masks/`, plus three CSV indexes
+- **`D:\RootPainterSync\projects/` is empty** — clean slate for new experiments
+
+Sources: `Raphael_Updated_20261021_v1` (316 images, original + follow-up reviews) and `Raphael_Positive_Curated_20261105_v1` (200 images, positive-candidate session).
 
 ### Maintenance & correctness fixes (2026-06-11)
 

@@ -295,6 +295,20 @@ def ensemble_segment_models(models, image, bs, in_w, out_w, threshold=0.5):
     mode is restored after inference so an instruction handled between training
     batches cannot accidentally leave the trainable model in evaluation mode.
     """
+    foreground_probs = ensemble_foreground_probs(
+        models, image, bs, in_w, out_w)
+    predicted = foreground_probs > threshold
+    predicted = predicted.astype(int)
+    return predicted
+
+
+def ensemble_foreground_probs(models, image, bs, in_w, out_w):
+    """Return the flip-averaged foreground probability map for *image*.
+
+    This is the exact probability map the painter thresholds for its overlay,
+    exposed separately so offline evaluation scores the same inference path
+    the clinician sees instead of re-implementing it.
+    """
     pred_sum = None
     pred_count = 0
     image, pad_settings = im_utils.pad_to_min(image, min_w=in_w, min_h=in_w)
@@ -326,10 +340,7 @@ def ensemble_segment_models(models, image, bs, in_w, out_w, threshold=0.5):
         raise ValueError('At least one model is required for segmentation')
 
     pred_sum = im_utils.crop_from_pad_settings(pred_sum, pad_settings)
-    foreground_probs = pred_sum / pred_count
-    predicted = foreground_probs > threshold
-    predicted = predicted.astype(int)
-    return predicted
+    return pred_sum / pred_count
 
 
 def epoch(model, train_loader, batch_size,
