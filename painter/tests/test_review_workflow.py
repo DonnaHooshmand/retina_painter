@@ -14,14 +14,18 @@ test_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.join(os.path.dirname(test_dir), "src", "main", "python")
 sys.path.insert(0, src_dir)
 
+import review_utils  # noqa: E402
 from review_utils import (  # noqa: E402
     ANNOTATION_FOREGROUND_ONLY,
+    BACKGROUND_STROKE_RGBA,
     DECISION_OVERRIDE_EMPTY,
     PREDICTION_CORRECTED,
+    absent_review_is_complete,
     backfill_decision_audit_previews,
     completed_review_count,
     export_completed_reviews,
     incomplete_warmup_reviews,
+    is_whole_scan_background,
     load_review,
     load_review_document,
     mark_training_started,
@@ -30,6 +34,7 @@ from review_utils import (  # noqa: E402
     save_review,
     should_auto_start_training,
     training_has_started,
+    write_whole_scan_background,
 )
 
 
@@ -47,6 +52,71 @@ def _save_annotation(path, red_pixels=(), green_pixels=()):
     for y, x in green_pixels:
         array[y, x] = [0, 255, 0, 180]
     Image.fromarray(array, mode="RGBA").save(path)
+
+
+def test_only_a_completed_absent_review_counts_as_a_clean_scan():
+    assert absent_review_is_complete(
+        {"decision": "absent", "review_complete": True})
+    assert not absent_review_is_complete(
+        {"decision": "absent", "review_complete": False})
+    assert not absent_review_is_complete(
+        {"decision": "uncertain", "review_complete": True})
+    assert not absent_review_is_complete(
+        {"decision": "present", "review_complete": True})
+    assert not absent_review_is_complete(None)
+
+
+def test_whole_scan_background_is_written_as_the_trainer_reads_it(
+        tmp_path, monkeypatch):
+    path = tmp_path / "annotations" / "val" / "scan.png"
+    assert not is_whole_scan_background(path)  # no file yet
+    assert not is_whole_scan_background(None)
+
+    write_whole_scan_background(path, width=6, height=5)
+    with Image.open(path) as image:
+        pixels = np.array(image)
+    assert pixels.shape == (5, 6, 4)
+    assert (pixels == BACKGROUND_STROKE_RGBA).all()
+    assert is_whole_scan_background(path)
+    # Written beside the destination and swapped in: nothing is left behind.
+    assert [entry.name for entry in path.parent.iterdir()] == ["scan.png"]
+
+    # The trainer's tools decode it as background everywhere, lesion nowhere.
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(test_dir)), "trainer", "experiments"))
+    import mask_io
+    assert mask_io.BACKGROUND_RGBA == BACKGROUND_STROKE_RGBA
+    foreground, background = mask_io.read_annotation(path)
+    assert background.all() and not foreground.any()
+
+    # Strokes are not a whole scan, and one red pixel is enough to say no.
+    strokes = tmp_path / "strokes.png"
+    _save_annotation(strokes, green_pixels=[(1, 1), (2, 2)])
+    assert not is_whole_scan_background(strokes)
+    pixels[3, 4] = [255, 0, 0, 180]
+    Image.fromarray(pixels, mode="RGBA").save(strokes)
+    assert not is_whole_scan_background(strokes)
+
+    # While the trainer holds the old file open (Windows) the swap is
+    # retried; if it never succeeds the file is overwritten in place.
+    _save_annotation(path, green_pixels=[(0, 0)])
+    real_replace = os.replace
+    refusals = [PermissionError("in use")] * 2
+
+    def replace(source, destination):
+        if refusals:
+            raise refusals.pop()
+        real_replace(source, destination)
+
+    monkeypatch.setattr(review_utils.os, "replace", replace)
+    write_whole_scan_background(path, 6, 5, delay=0)
+    assert is_whole_scan_background(path)
+
+    _save_annotation(path, green_pixels=[(0, 0)])
+    refusals.extend([PermissionError("in use")] * 3)
+    write_whole_scan_background(path, 6, 5, attempts=3, delay=0)
+    assert is_whole_scan_background(path)
+    assert [entry.name for entry in path.parent.iterdir()] == ["scan.png"]
 
 
 def test_reconstruction_applies_green_then_red(tmp_path):

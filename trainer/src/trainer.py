@@ -91,13 +91,15 @@ class Trainer():
                  model_type='unet',
                  loss_type='auto',
                  max_epochs_without_progress=60,
-                 candidate_rollback_patience=3,
+                 candidate_rollback_patience=None,
                  min_foreground_val_files_for_rollback=2,
                  provisional_ui_loss_margin=0.01,
                  ):
 
-        if candidate_rollback_patience < 1:
-            raise ValueError('candidate_rollback_patience must be at least 1')
+        if (candidate_rollback_patience is not None
+                and candidate_rollback_patience < 1):
+            raise ValueError('candidate_rollback_patience must be at least 1 '
+                             '(or None to leave automatic rollback off)')
         if min_foreground_val_files_for_rollback < 1:
             raise ValueError(
                 'min_foreground_val_files_for_rollback must be at least 1')
@@ -185,10 +187,15 @@ class Trainer():
         # improvement. ~30 min at default cadence; configurable via
         # --max-epochs-without-progress.
         self.max_epochs_without_progress = max_epochs_without_progress
-        # Painter inference uses the durable validation-best checkpoint. If
-        # the in-memory candidate remains materially worse than that checkpoint
-        # for this many consecutive epochs, automatically restore it and reset
-        # the optimizer instead of requiring a doctor to Stop/Start training.
+        # Painter inference uses the durable validation-best checkpoint, and
+        # the in-memory candidate keeps training from where it is (the
+        # original RootPainter behaviour). Automatic rollback is optional: with
+        # a patience of N, a candidate that stays materially worse than that
+        # checkpoint for N consecutive epochs is replaced by it, with a fresh
+        # optimizer. It is off by default (None) because on annotations that
+        # are not changing it fires on ordinary validation noise and keeps
+        # discarding training: at least 26 times in one three-hour run, and a
+        # U-Net never left its first plateau with it on.
         self.candidate_rollback_patience = candidate_rollback_patience
         # One tiny-lesion validation scan is too noisy to decide that the
         # in-memory candidate must be discarded. Promotion and training still
@@ -417,6 +424,13 @@ class Trainer():
                             f'model={self.model_type})')
             print(loss_message, flush=True)
             self.log(loss_message)
+            patience = getattr(self, 'candidate_rollback_patience', None)
+            rollback_message = (
+                'Automatic candidate rollback: off' if patience is None else
+                f'Automatic candidate rollback: after {patience} consecutive '
+                'worse validation epochs')
+            print(rollback_message, flush=True)
+            self.log(rollback_message)
             model_paths = model_utils.get_latest_model_paths(model_dir, 1)
             if model_paths:
                 self.model = model_utils.load_model(model_paths[0],
@@ -633,7 +647,9 @@ class Trainer():
                 'sparse foreground validation; '
                 f'{self.validation_foreground_file_count}/'
                 f'{self.min_foreground_val_files_for_rollback} '
-                'foreground-bearing files; rollback deferred')
+                'foreground-bearing files')
+            if getattr(self, 'candidate_rollback_patience', None) is not None:
+                validation_state += '; rollback deferred'
         else:
             validation_state = (
                 'foreground-informed validation; '
@@ -723,7 +739,14 @@ class Trainer():
 
     def _rollback_worse_candidate(self, cur_loss, ui_loss,
                                   ui_model, ui_checkpoint_path):
-        """Restore the stable UI checkpoint after sustained candidate drift."""
+        """Restore the stable UI checkpoint after sustained candidate drift.
+
+        Does nothing unless a rollback patience was set.
+        """
+        if getattr(self, 'candidate_rollback_patience', None) is None:
+            self.candidate_worse_epochs = 0
+            self.rollback_deferred_foreground_count = None
+            return False
         # Background-only validation can assess false-positive suppression but
         # cannot assess RIPL sensitivity. It may provisionally promote a
         # checkpoint during cold start, but must not discard a candidate that

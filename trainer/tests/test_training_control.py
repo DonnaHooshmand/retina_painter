@@ -488,6 +488,45 @@ def test_candidate_rolls_back_after_consecutive_worse_epochs(
     assert trainer.candidate_worse_epochs == 0
 
 
+def test_rollback_is_off_unless_a_patience_is_set():
+    import inspect
+
+    # The trainer keeps training its candidate by default, as RootPainter does.
+    default = inspect.signature(Trainer.__init__).parameters[
+        'candidate_rollback_patience'].default
+    assert default is None
+
+    trainer = object.__new__(Trainer)
+    trainer.model_type = 'unet'
+    trainer.model = torch.nn.Linear(2, 2)
+    trainer.optimizer = object()
+    trainer.min_val_loss_delta = 1e-4
+    trainer.candidate_rollback_patience = default
+    trainer.min_foreground_val_files_for_rollback = 2
+    trainer.candidate_worse_epochs = 0
+    trainer.validation_has_foreground = True
+    trainer.validation_foreground_file_count = 2
+    trainer.rollback_deferred_foreground_count = None
+    messages = []
+    trainer.log = messages.append
+    trainer.write_message = messages.append
+    candidate, optimizer = trainer.model, trainer.optimizer
+
+    # However long the candidate stays worse, it is never replaced and the
+    # painter is told nothing about rollback.
+    for _ in range(10):
+        assert not trainer._rollback_worse_candidate(
+            cur_loss=1.0, ui_loss=0.5,
+            ui_model=torch.nn.Linear(2, 2),
+            ui_checkpoint_path='000013_best.pkl')
+    assert trainer.model is candidate and trainer.optimizer is optimizer
+    assert trainer.candidate_worse_epochs == 0 and messages == []
+
+    # A patience below 1 is still refused; None is the way to say "off".
+    with pytest.raises(ValueError, match='at least 1'):
+        Trainer(sync_dir='unused', candidate_rollback_patience=0)
+
+
 def test_background_only_validation_never_rolls_back_candidate(tmp_path):
     trainer = object.__new__(Trainer)
     trainer.model_type = 'unet'

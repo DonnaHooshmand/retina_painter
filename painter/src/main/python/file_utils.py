@@ -20,6 +20,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import os
 from os.path import splitext
 import filecmp
+import time
 import numpy as np
 from skimage.io import imread
 
@@ -105,6 +106,29 @@ def resolve_new_annot_target_dir(train_annot_dir, val_annot_dir,
             f"Fixed annotation target is not train or val: {annot_dir}"
         )
     return annot_dir
+
+
+def annotation_is_empty(annot_path):
+    """Whether a saved annotation holds no stroke at all."""
+    return not np.any(imread(annot_path))
+
+
+def remove_annotation(annot_path, attempts=20, delay=0.05):
+    """Delete an annotation file; returns whether it is gone.
+
+    On Windows the delete fails while the trainer has the file open, so it is
+    retried for a moment. The caller keeps the file if it cannot be removed.
+    """
+    for attempt in range(attempts):
+        try:
+            os.remove(annot_path)
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError:
+            if attempt < attempts - 1:
+                time.sleep(delay)
+    return False
 
 
 #pylint: disable=R0913 # Too many arguments

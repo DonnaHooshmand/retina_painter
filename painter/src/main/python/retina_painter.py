@@ -62,6 +62,8 @@ from visibility_widget import VisibilityWidget
 from file_utils import last_fname_with_annotations
 from file_utils import get_annot_path
 from file_utils import maybe_save_annotation
+from file_utils import annotation_is_empty, remove_annotation
+from file_utils import resolve_new_annot_target_dir
 from file_utils import ls # list directory without hidden files.
 import im_utils
 from instructions import send_instruction
@@ -72,10 +74,12 @@ from resize_images import ResizeWidget
 from keyboard_shortcuts_dialog import KeyboardShortcutsDialog
 from server_manager import find_trainer_launch, ServerManager, ServerLogDialog, check_trainer_status
 from review_widget import ReviewWidget
-from review_utils import (completed_review_count, export_completed_reviews,
-                          incomplete_warmup_reviews, load_review,
+from review_utils import (absent_review_is_complete, completed_review_count,
+                          export_completed_reviews, incomplete_warmup_reviews,
+                          is_whole_scan_background, load_review,
                           mark_training_started, save_review,
-                          should_auto_start_training, training_has_started)
+                          should_auto_start_training, training_has_started,
+                          write_whole_scan_background)
 
 
 
@@ -215,7 +219,11 @@ class RetinaPainter(QtWidgets.QMainWindow):
                 parent=self)
             if not proceed:
                 return
-        specified_dataset_dir = self.sync_dir / 'datasets' / PurePath(settings['dataset'])
+        # Normalised, so a dataset kept outside the datasets folder (a project
+        # file with "../curated_datasets/...") yields the same image paths as
+        # the navigation list, which is built from absolute paths.
+        specified_dataset_dir = Path(os.path.abspath(
+            self.sync_dir / 'datasets' / PurePath(settings['dataset'])))
         # if dataset doesn't exist on the file system get another from the user
         confirmed_dataset_dir = self.confirm_dataset_exists_or_respecify(
             specified_dataset_dir, proj_file_path)
@@ -224,6 +232,14 @@ class RetinaPainter(QtWidgets.QMainWindow):
         self.training_has_started = training_has_started(self.proj_location)
         self.auto_start_training_after_reviews = settings.get(
             'auto_start_training_after_reviews', 10)
+        # Opt-in per project: a scan reviewed as "RIPL absent" is trained on
+        # as background everywhere, not only where the user painted. Projects
+        # without the setting keep sparse strokes only.
+        self.absent_scans_as_background = bool(
+            settings.get('absent_scans_as_background', False))
+        # True while the current scan's annotation file is that whole-scan
+        # background and the scene shows the user's own strokes instead.
+        self.annot_is_absent_background = False
         self.image_fnames = settings['file_names']
         self.seg_dir = self.proj_location / 'segmentations'
         self.log_dir = self.proj_location / 'logs'
@@ -507,10 +523,32 @@ class RetinaPainter(QtWidgets.QMainWindow):
         if not self.seg_visible:
             self.seg_pixmap_holder.setPixmap(self.blank_pixmap)
 
+    def strokes_path_for_display(self):
+        """The file holding what the user painted on the current scan.
+
+        Normally that is the annotation file. For a completed absent review in
+        a project that counts absent scans as background, the annotation file
+        marks the whole scan as background; the user's own strokes are then
+        the ones snapshotted with the review, or none.
+        """
+        self.annot_is_absent_background = False
+        if not (self.absent_scans_as_background and self.annot_path
+                and os.path.isfile(self.annot_path)):
+            return self.annot_path
+        review = load_review(
+            self.proj_location, os.path.basename(self.image_path))
+        if not (absent_review_is_complete(review)
+                and is_whole_scan_background(self.annot_path)):
+            return self.annot_path
+        self.annot_is_absent_background = True
+        snapshot = review.get('annotation_snapshot')
+        return os.path.join(self.proj_location, snapshot) if snapshot else None
+
     def update_annot(self):
         # if annot file is present then load
-        if self.annot_path and os.path.isfile(self.annot_path):
-            self.annot_pixmap = QtGui.QPixmap(self.annot_path)
+        strokes_path = self.strokes_path_for_display()
+        if strokes_path and os.path.isfile(strokes_path):
+            self.annot_pixmap = QtGui.QPixmap(strokes_path)
         else:
             # otherwise use blank
             self.annot_pixmap = QtGui.QPixmap(self.im_width, self.im_height)
@@ -1046,6 +1084,18 @@ class RetinaPainter(QtWidgets.QMainWindow):
         self.saved_review_annotation = self.scene.annot_pixmap.toImage().copy()
         self.review_controls_edited = False
 
+    def review_is_unchanged(self):
+        """Whether the current scan still matches its saved, completed review."""
+        previous = getattr(self, 'saved_review_record', None) or {}
+        return bool(
+            getattr(self, 'saved_review_filename', None)
+            == os.path.basename(self.image_path)
+            and previous.get('review_complete')
+            and self.review_widget.is_complete()
+            and previous.get('decision') == self.review_widget.decision()
+            and not self.review_controls_edited
+            and self.scene.annot_pixmap.toImage() == self.saved_review_annotation)
+
     def save_current_review(self):
         """Persist review status and completed-review provenance snapshots."""
         if not hasattr(self, 'review_widget') or not hasattr(self, 'png_fname'):
@@ -1053,13 +1103,7 @@ class RetinaPainter(QtWidgets.QMainWindow):
         image_filename = os.path.basename(self.image_path)
         decision = self.review_widget.decision()
         review_complete = self.review_widget.is_complete()
-        previous = getattr(self, 'saved_review_record', {})
-        if (getattr(self, 'saved_review_filename', None) == image_filename
-                and previous.get('review_complete')
-                and review_complete
-                and previous.get('decision') == decision
-                and not self.review_controls_edited
-                and self.scene.annot_pixmap.toImage() == self.saved_review_annotation):
+        if self.review_is_unchanged():
             # Navigation, close, and export all save the current scan. A newer
             # prediction or training start alone must not silently replace the
             # clinician's completed snapshot or its reconstruction policy.
@@ -1619,6 +1663,17 @@ class RetinaPainter(QtWidgets.QMainWindow):
                 else:
                     raise ValueError(
                         f'Image {self.png_fname} is missing from fixed split')
+            was_absent_background = self.annot_is_absent_background
+            if was_absent_background and self.review_is_unchanged():
+                # The annotation file is the whole-scan background of a
+                # completed absent review that still stands. Rewriting it
+                # would tell the trainer the annotations had changed.
+                self.metrics_plot.add_file_metrics(
+                    os.path.basename(self.image_path))
+                return True
+            if was_absent_background and fixed_target_dir is None:
+                # Projects without a fixed split: the scan stays on its side.
+                fixed_target_dir = os.path.dirname(self.annot_path)
             self.annot_path = maybe_save_annotation(self.proj_location,
                                                     self.scene.annot_pixmap,
                                                     self.annot_path,
@@ -1626,8 +1681,46 @@ class RetinaPainter(QtWidgets.QMainWindow):
                                                     self.train_annot_dir,
                                                     self.val_annot_dir,
                                                     fixed_target_dir)
+            if was_absent_background:
+                # The review changed, so the user's own strokes have replaced
+                # the whole-scan background. A scan without strokes has no
+                # annotation file, as for any scan nobody painted on.
+                self.annot_is_absent_background = False
+                if (annotation_is_empty(self.annot_path)
+                        and remove_annotation(self.annot_path)):
+                    self.annot_path = None
+            saved = self.save_current_review()
+            if self.absent_scans_as_background:
+                self.apply_absent_decision_to_annotation(fixed_target_dir)
             self.metrics_plot.add_file_metrics(os.path.basename(self.image_path))
-            return self.save_current_review()
+            return saved
         return True
+
+    def apply_absent_decision_to_annotation(self, fixed_target_dir):
+        """Make a completed absent review's annotation background everywhere.
+
+        The trainer only reads annotation files, so this file is what tells it
+        that nothing on the scan is a lesion. The strokes the user painted stay
+        in the review snapshot and are what the painter shows on return.
+        """
+        record = getattr(self, 'saved_review_record', None) or {}
+        if (getattr(self, 'saved_review_filename', None)
+                != os.path.basename(self.image_path)
+                or not absent_review_is_complete(record)):
+            return
+        destination = self.annot_path
+        if not destination:
+            destination = os.path.join(
+                resolve_new_annot_target_dir(
+                    self.train_annot_dir, self.val_annot_dir,
+                    fixed_target_dir),
+                self.png_fname)
+        if not is_whole_scan_background(destination):
+            write_whole_scan_background(
+                destination,
+                self.scene.annot_pixmap.width(),
+                self.scene.annot_pixmap.height())
+        self.annot_path = destination
+        self.annot_is_absent_background = True
 
 

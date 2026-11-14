@@ -101,6 +101,31 @@ def combined_loss(predictions, labels, mask=None):
 
 
 
+def per_tile_combined_loss(predictions, labels, mask):
+    """Combined Dice + 0.3 CE computed for each tile, then averaged.
+
+    ``combined_loss`` pools every supervised pixel of a batch. That is fine
+    while tiles carry similar amounts of supervision, but a fully labelled
+    tile (for example a scan decided absent, with every pixel background)
+    then holds tens of thousands of supervised pixels against a few hundred
+    on a tile with sparse strokes, and dominates both terms. Here each
+    supervised tile contributes one loss of its own and the batch loss is
+    their mean, so one tile cannot outweigh another. Tiles with no supervised
+    pixel are left out; untouched pixels still contribute nothing.
+    """
+    tile_losses = []
+    for index in range(predictions.shape[0]):
+        tile_mask = mask[index:index + 1]
+        if tile_mask.sum().item() == 0:
+            continue
+        tile_losses.append(combined_loss(
+            predictions[index:index + 1], labels[index:index + 1],
+            mask=tile_mask))
+    if not tile_losses:
+        return predictions.sum() * 0.0
+    return torch.stack(tile_losses).mean()
+
+
 def dice_loss2(preds, labels):
     """ based on loss function from V-Net paper """
     assert torch.max(labels) <= 1
@@ -190,7 +215,7 @@ def tversky_loss(predictions, labels, mask=None, alpha=0.7, beta=0.3,
 
 def resolve_training_loss_type(model_type, loss_type='auto'):
     """Resolve an explicit or model-family-default loss selection."""
-    valid_loss_types = ('auto', 'combined', 'tversky')
+    valid_loss_types = ('auto', 'combined', 'combined_per_tile', 'tversky')
     if loss_type not in valid_loss_types:
         raise ValueError(
             f"Unknown loss type {loss_type!r}; expected one of "
@@ -216,4 +241,8 @@ def training_loss(predictions, labels, model_type='unet', mask=None,
     resolved_loss_type = resolve_training_loss_type(model_type, loss_type)
     if resolved_loss_type == 'tversky':
         return tversky_loss(predictions, labels, mask=mask)
+    if resolved_loss_type == 'combined_per_tile':
+        if mask is None:
+            mask = torch.ones_like(labels, dtype=predictions.dtype)
+        return per_tile_combined_loss(predictions, labels, mask)
     return combined_loss(predictions, labels, mask=mask)

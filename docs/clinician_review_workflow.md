@@ -60,6 +60,33 @@ RetinaPainter also writes a labeled visual copy under
 in that audit preview—not in the live UI, the source OCT, the sparse correction
 PNG, or any image supplied to the model.
 
+## Absent scans as clean scans (optional)
+
+By default the decision is recorded but not trained on: only painted pixels
+reach the trainer, so an explicitly reviewed negative with no correction PNG
+teaches the model nothing. A project created with **Use scans marked RIPL
+absent as clean scans** ticked in the New Project dialog uses the decision as
+well. The option is off by default and is stored as
+`absent_scans_as_background` in the project file; existing projects are
+unchanged.
+
+With the option on, completing a review as `RIPL absent` writes that scan's
+training annotation as background everywhere, on the scan's fixed train or
+validation side, whether or not anything was painted. Nothing else changes for
+the clinician:
+
+- the strokes that were painted are kept in the review snapshot and are what
+  the painter shows when the scan is reopened;
+- saving, exporting or closing an unchanged absent scan rewrites nothing;
+- changing the decision, or unticking **Review complete**, puts the painted
+  strokes back as the training annotation, or removes it when nothing was
+  painted;
+- red marks still cannot be combined with `RIPL absent`; and
+- `RIPL present` scans keep their sparse strokes and `Uncertain` scans are not
+  trained on.
+
+Review records and exports are the same with the option on or off.
+
 Use **Project > Export completed reviews** to create a timestamped directory
 under `review_exports/`. It contains:
 

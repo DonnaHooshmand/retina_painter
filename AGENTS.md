@@ -229,7 +229,7 @@ primary clinical endpoint and contour agreement as a secondary diagnostic.
 
 **Workstation mode:** `server_manager.py` in the painter can auto-launch a bundled trainer executable, or in dev mode, launch the trainer from `trainer/env/bin/python`.
 
-**Annotation routing — train vs. validation:** New projects pre-assign every seeded filename to a fixed 5:1 train/validation split before annotation begins (`fixed_train_val_split` in `project_order.py`). The `.seg_proj` stores `train_file_names` and `val_file_names`; blank scans or model-dependent corrections cannot shift later filenames between splits. Projects created before this change omit those lists and retain the inherited count-based router. Existing pre-populated annotations are always overwritten in place, preserving externally prepared splits.
+**Annotation routing — train vs. validation:** New projects pre-assign every seeded filename to a fixed 5:1 train/validation split before annotation begins (`project_order.py`): by patient when the New Project dialog's Patient separation is on (`patient_grouped_train_val_split`), otherwise per file (`fixed_train_val_split`). The `.seg_proj` stores `train_file_names` and `val_file_names`; blank scans or model-dependent corrections cannot shift later filenames between splits. Projects created before this change omit those lists and retain the inherited count-based router. Existing pre-populated annotations are always overwritten in place, preserving externally prepared splits.
 
 **Reproducible trial seed and manifest order:** The New Project dialog has a **Trial seed** (default `0`). For ordinary new projects this single value fixes navigation order, filename-level train/validation membership, random model/decoder initialization, DataLoader ordering, worker RNGs, and Python/NumPy/PyTorch sampling. Training filenames are sorted before random selection so filesystem order cannot change seeded trials. When the selected dataset or its parent contains a `manifest.csv` with `rank` and `filename`, manifest rank overrides the navigation shuffle while the trial seed continues to control model initialization and training randomness. This makes every smaller nested dataset an exact navigation prefix of every larger one. Exact bitwise equality is only expected on the same software/hardware stack.
 
@@ -257,7 +257,13 @@ completed exports. Each completed review also gets a labeled visual copy under
 sparse training annotation stay free of label text. See
 `docs/clinician_review_workflow.md`.
 
-The fixed seeded split is per-file and still has **no patient-group awareness**. For patient-separated research splits:
+**Patient separation:** The New Project dialog has a **Patient separation** group, so the fixed split can be made by patient instead of by file. By default the patient is read from one part of the file name: the dialog shows an example name split at `_`, `-`, space and `.` (each can be switched off), pre-selects the first part that groups images (`suggest_patient_part`), and previews the image, patient and per-side counts before anything is created. A CSV with `filename` and `patient_id` columns is the alternative when names do not carry the patient. "No patient grouping" keeps the per-file split and is the starting choice when no part of the names groups images. Settings that cannot give every image a patient, or that put every image in one patient, block project creation.
+
+`patient_grouped_train_val_split` walks the navigation order and sends each newly met patient to validation whenever validation holds less than its 1-in-6 share of the images seen so far. No patient is on both sides; about one image in six is validation throughout a session (the first image still is); a nested-prefix project gives shared patients the same side; and with one image per patient the result equals `fixed_train_val_split`. The `.seg_proj` records `split_method: patient_grouped_…`, `patient_rule`, and `patient_groups` (one opaque number per entry of `file_names`, not the identifiers). The split is fixed before any label exists, so it cannot balance positives between the sides. On the combined development images the first name part reproduces the curated patient list exactly. Projects created before this change, and per-file projects, behave as before.
+
+**Absent scans as clean scans (opt-in):** The New Project dialog has a checkbox, **Use scans marked RIPL absent as clean scans**, off by default and stored as `absent_scans_as_background` in the `.seg_proj` (projects without the key behave as before). With it on, completing a review as "RIPL absent" makes that scan's annotation file background everywhere, on the scan's fixed side, whether or not anything was painted. The trainer needs no change because it only reads annotation files; this is the supervision `--supervision sparse_absent` prepares offline. The strokes the user painted stay in the review snapshot (`reviews/annotation_snapshots/`), and the painter shows those, not a green wash, when the scan is reopened (`RetinaPainter.strokes_path_for_display`). Saving an unchanged absent scan again rewrites nothing, because the trainer treats a changed file time as changed annotations and resets its early-stopping count. Changing the decision, unticking Review complete, or painting red (which blocks an absent review as before) puts the user's strokes back in the annotation file, or removes the file when there are none. "Present" scans keep sparse strokes and "uncertain" scans are not trained on. In the session replay this supervision removed the blob-on-every-scan failure but lost lesion scans (`docs/offline_experiments.md`), so it is an option, not the default. Checks: `painter/tests/smoke_absent_background.py`.
+
+To impose a split prepared outside the painter instead:
 
 - **Prefer explicit project lists:** prepare `train_file_names` and
   `val_file_names` from verified patient assignments, with disjoint membership
@@ -284,17 +290,20 @@ same-project UI predictions use explicitly provisional live weights only while
 their background validation loss remains within `0.01` of the retained
 checkpoint. A candidate outside that false-positive safety margin continues
 training in memory while the UI uses the durable provisional checkpoint.
-Background-only CE may provisionally promote checkpoints but cannot trigger
-automatic rollback because it cannot assess sensitivity. Once validation is
-foreground-informed, the UI uses the durable best checkpoint. A candidate
-that is worse for three consecutive epochs is restored automatically only
-after at least two validation annotation files contain foreground. With just
-one foreground-bearing validation file, rollback is explicitly deferred
-because that one sparse scan is too noisy to justify discarding the candidate.
-Annotation updates reset early stopping and restart the three-epoch candidate
-rollback grace period because the candidate needs time to learn the expanded
-correction set. Candidate and incumbent are then re-evaluated on the same
-current validation set.
+Background-only CE may provisionally promote checkpoints. Once validation is
+foreground-informed, the UI uses the durable best checkpoint, and the
+candidate keeps training from where it is, as in RootPainter. Annotation
+updates reset early stopping; candidate and incumbent are then re-evaluated on
+the same current validation set.
+
+Automatic candidate rollback is off by default (since 2026-11-13). On
+annotations that are not changing it fired on ordinary validation noise and
+kept discarding training (at least 26 times in one three-hour run).
+`--candidate-rollback-patience N` turns it on for a controlled comparison: a
+candidate that is worse for N consecutive epochs is then restored from the
+best checkpoint, only after at least two validation annotation files contain
+foreground, never on background-only validation, and with the count restarted
+whenever annotations change.
 
 ## Clinical Evaluation Contract
 
@@ -600,10 +609,8 @@ Based on: Hayati, A. et al. (2025). RFA-U-Net: A Foundation Model-Driven Approac
 - Only LoRA params + decoder trained per interactive step → fast updates on desktop GPU
 - Optimizer may switch from SGD to AdamW with warmup for LoRA
 
-### Phase 3: Curriculum Learning — PLANNED
-- Staged training scheduler: synthetic lesions → easy real cases → hard cases → confounders
-- User labels certain images as "easy" or "hard"; system schedules training order accordingly
-- Evaluate on RIPL and SDD detection tasks
+### Phase 3: Curriculum Learning — DROPPED (2026-11-11)
+- Removed from scope by project decision. Do not propose or build a staged training scheduler, synthetic-lesion stages, or easy/hard image tagging.
 
 ### Phase 4: Multi-Class Segmentation — PLANNED
 - Extend decoder output head from 2 channels to N classes

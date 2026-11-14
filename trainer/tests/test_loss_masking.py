@@ -278,3 +278,115 @@ def test_legacy_zeroing_logits_was_leaky():
         f"masked loss ({correct:.4f}); if they're equal, the masked "
         f"loss has regressed to legacy behavior."
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-tile loss: one fully labelled tile must not outweigh a sparse one
+# ---------------------------------------------------------------------------
+
+from loss import per_tile_combined_loss  # noqa: E402  pylint: disable=C0413
+
+
+def _stroke_tile(h=8, w=12):
+    """A tile with a few supervised pixels: 4 foreground, 4 background."""
+    labels = torch.zeros(1, h, w, dtype=torch.long)
+    mask = torch.zeros(1, h, w, dtype=torch.float32)
+    labels[:, :2, :2] = 1
+    mask[:, :2, :2] = 1.0
+    mask[:, 4:6, 4:6] = 1.0
+    logits = torch.zeros(1, 2, h, w)
+    logits[:, 1, :2, :2] = 0.5
+    logits[:, 0, 4:6, 4:6] = 0.5
+    return logits, labels, mask
+
+
+def _whole_background_tile(h=8, w=12):
+    """Every pixel supervised as background, as for a scan decided absent."""
+    labels = torch.zeros(1, h, w, dtype=torch.long)
+    mask = torch.ones(1, h, w, dtype=torch.float32)
+    logits = torch.zeros(1, 2, h, w)
+    logits[:, 1, :, :6] = 1.0  # false-positive leaning half
+    return logits, labels, mask
+
+
+def _cat(*tiles):
+    return tuple(torch.cat(parts) for parts in zip(*tiles))
+
+
+def test_per_tile_loss_equals_combined_loss_for_one_tile():
+    logits, labels, mask = _stroke_tile()
+
+    assert torch.allclose(per_tile_combined_loss(logits, labels, mask),
+                          combined_loss(logits, labels, mask=mask))
+
+
+def test_per_tile_loss_is_the_mean_over_supervised_tiles():
+    stroke, background = _stroke_tile(), _whole_background_tile()
+    untouched = (torch.randn(1, 2, 8, 12), torch.zeros(1, 8, 12).long(),
+                 torch.zeros(1, 8, 12))
+    logits, labels, mask = _cat(stroke, background, untouched)
+
+    expected = (combined_loss(stroke[0], stroke[1], mask=stroke[2])
+                + combined_loss(background[0], background[1],
+                                mask=background[2])) / 2
+    assert torch.allclose(per_tile_combined_loss(logits, labels, mask),
+                          expected)
+    # Nothing supervised anywhere: a zero that still carries a gradient path.
+    empty = per_tile_combined_loss(untouched[0].requires_grad_(), untouched[1],
+                                   untouched[2])
+    assert empty.item() == 0.0
+    empty.backward()
+
+
+def test_whole_background_tile_cannot_swamp_a_stroke_tile():
+    stroke, background = _stroke_tile(), _whole_background_tile()
+
+    def stroke_gradient(loss_fn, with_background):
+        logits = stroke[0].clone().requires_grad_()
+        if with_background:
+            batch_logits = torch.cat([logits, background[0]])
+            labels = torch.cat([stroke[1], background[1]])
+            mask = torch.cat([stroke[2], background[2]])
+        else:
+            batch_logits, labels, mask = logits, stroke[1], stroke[2]
+        loss_fn(batch_logits, labels, mask).backward()
+        return logits.grad
+
+    def pooled(logits, labels, mask):
+        return combined_loss(logits, labels, mask=mask)
+
+    # Per tile: the stroke tile's gradient is simply shared between two tiles.
+    alone = stroke_gradient(per_tile_combined_loss, False)
+    paired = stroke_gradient(per_tile_combined_loss, True)
+    assert torch.allclose(paired, alone / 2, atol=1e-7)
+    # Pooled: the fully labelled tile takes most of the gradient away from
+    # the lesion strokes, far more than sharing between two tiles would.
+    pooled_alone = stroke_gradient(pooled, False)[:, :, :2, :2].abs().sum()
+    pooled_paired = stroke_gradient(pooled, True)[:, :, :2, :2].abs().sum()
+    assert pooled_paired < pooled_alone / 4
+
+
+def test_per_tile_loss_zero_grad_on_untouched_pixels():
+    logits, labels, mask = _cat(_stroke_tile(), _whole_background_tile())
+    logits = logits.clone().requires_grad_()
+
+    per_tile_combined_loss(logits, labels, mask).backward()
+
+    untouched = (mask == 0).unsqueeze(1).expand_as(logits)
+    assert torch.all(logits.grad[untouched] == 0)
+    assert logits.grad[~untouched].abs().sum() > 0
+
+
+def test_training_loss_routes_combined_per_tile():
+    logits, labels, mask = _cat(_stroke_tile(), _whole_background_tile())
+
+    assert resolve_training_loss_type('retfound_rfa',
+                                      'combined_per_tile') == 'combined_per_tile'
+    assert torch.allclose(
+        training_loss(logits, labels, model_type='unet', mask=mask,
+                      loss_type='combined_per_tile'),
+        per_tile_combined_loss(logits, labels, mask))
+    # Without a mask every pixel is supervised.
+    assert torch.allclose(
+        training_loss(logits, labels, loss_type='combined_per_tile'),
+        per_tile_combined_loss(logits, labels, torch.ones_like(mask)))

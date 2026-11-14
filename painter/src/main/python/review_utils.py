@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -34,6 +35,8 @@ VALID_RECONSTRUCTION_MODES = (
     ANNOTATION_FOREGROUND_ONLY,
     DECISION_OVERRIDE_EMPTY,
 )
+# The painter's background brush colour (graphics_scene.background_color).
+BACKGROUND_STROKE_RGBA = (0, 255, 0, 180)
 DECISION_PREVIEW_LABELS = {
     "present": ("RIPL PRESENT", (255, 70, 70, 255)),
     "absent": ("RIPL ABSENT", (40, 255, 90, 255)),
@@ -143,6 +146,58 @@ def create_decision_audit_preview(image_path, segmentation_path,
     output_path = Path(output_path)
     _atomic_save_png(preview.convert("RGB"), output_path)
     return output_path
+
+
+def absent_review_is_complete(record) -> bool:
+    """Whether a review record is a completed "RIPL absent" decision."""
+    return bool(record
+                and record.get("review_complete")
+                and record.get("decision") == "absent")
+
+
+def is_whole_scan_background(annotation_path) -> bool:
+    """Whether an annotation marks every pixel background and none foreground.
+
+    This is the file written for a completed absent review in projects that
+    count such scans as background everywhere. It is decoded as the trainer
+    decodes annotations: red is foreground and green is background.
+    """
+    if annotation_path is None or not Path(annotation_path).is_file():
+        return False
+    with Image.open(annotation_path) as image:
+        pixels = np.asarray(image.convert("RGBA"))
+    visible = pixels[:, :, 3] > 0
+    foreground = np.logical_and(pixels[:, :, 0] > 0, visible)
+    background = np.logical_and(pixels[:, :, 1] > 0, visible)
+    return bool(background.all() and not foreground.any())
+
+
+def write_whole_scan_background(annotation_path, width, height,
+                                attempts=20, delay=0.05) -> Path:
+    """Write an annotation that marks every pixel of a scan as background.
+
+    The file is written beside its destination and swapped in, so the trainer
+    never reads half of it. On Windows the swap fails while the trainer has
+    the old file open; it is retried and, as a last resort, the file is
+    overwritten in place, which is how the painter saves ordinary strokes.
+    """
+    destination = Path(annotation_path)
+    pixels = np.empty((int(height), int(width), 4), dtype=np.uint8)
+    pixels[:] = BACKGROUND_STROKE_RGBA
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(
+        f".{destination.name}.{uuid4().hex}.tmp")
+    Image.fromarray(pixels, mode="RGBA").save(temporary, format="PNG")
+    for attempt in range(attempts):
+        try:
+            os.replace(temporary, destination)
+            return destination
+        except PermissionError:
+            if attempt < attempts - 1:
+                time.sleep(delay)
+    shutil.copyfile(temporary, destination)
+    os.remove(temporary)
+    return destination
 
 
 def load_review_document(project_dir) -> dict:

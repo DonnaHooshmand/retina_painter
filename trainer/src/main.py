@@ -69,18 +69,29 @@ def main() -> None:
         help="stop training after this many validation epochs with no improvement in validation loss",
     )
     parser.add_argument(
+        "--candidate-rollback-patience",
+        type=int,
+        default=None,
+        help=(
+            "turn automatic candidate rollback on: restore the best "
+            "checkpoint after this many consecutive worse validation epochs "
+            "(off by default)"
+        ),
+    )
+    parser.add_argument(
         "--min-foreground-val-files-for-rollback",
         type=int,
         default=2,
         help=(
-            "minimum number of foreground-bearing validation annotations "
-            "required before automatic candidate rollback"
+            "with --candidate-rollback-patience: minimum number of "
+            "foreground-bearing validation annotations required before "
+            "automatic candidate rollback"
         ),
     )
     parser.add_argument(
         "--loss-type",
         default="auto",
-        choices=["auto", "combined", "tversky"],
+        choices=["auto", "combined", "combined_per_tile", "tversky"],
         help=(
             "training loss: 'auto' uses combined Dice/CE for every model; "
             "explicit choices support controlled loss ablations"
@@ -94,6 +105,7 @@ def main() -> None:
                       model_type=args.model_type,
                       loss_type=args.loss_type,
                       max_epochs_without_progress=args.max_epochs_without_progress,
+                      candidate_rollback_patience=args.candidate_rollback_patience,
                       min_foreground_val_files_for_rollback=(
                           args.min_foreground_val_files_for_rollback))
     trainer.main_loop()
