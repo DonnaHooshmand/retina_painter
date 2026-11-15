@@ -29,6 +29,7 @@ from review_utils import (  # noqa: E402
     load_review,
     load_review_document,
     mark_training_started,
+    new_project_foreground_tile_fraction,
     reconstruct_corrected_binary,
     reconstruct_review_binary,
     save_review,
@@ -64,6 +65,14 @@ def test_only_a_completed_absent_review_counts_as_a_clean_scan():
     assert not absent_review_is_complete(
         {"decision": "present", "review_complete": True})
     assert not absent_review_is_complete(None)
+
+
+def test_clean_scans_come_with_a_fixed_share_of_lesion_crops():
+    # A project that counts absent scans as clean stores, and later sends the
+    # trainer, half of the crops from scans with a lesion mark. Any other
+    # project stores no share, which leaves the trainer's sampler adaptive.
+    assert new_project_foreground_tile_fraction(True) == 0.5
+    assert new_project_foreground_tile_fraction(False) is None
 
 
 def test_whole_scan_background_is_written_as_the_trainer_reads_it(

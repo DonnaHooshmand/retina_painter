@@ -62,8 +62,8 @@ from pathlib import Path
 
 from mask_io import read_annotation
 from run_offline_training import (build_offline_trainer, build_parser,
-                                  git_commit, load_project, rollback_patience,
-                                  training_config)
+                                  git_commit, lesion_crop_share, load_project,
+                                  rollback_patience, training_config)
 
 ROLES = ('train', 'val')
 
@@ -268,7 +268,11 @@ def main(argv=None):
     settings, sync_dir, images_dir = load_project(project_dir)
     args.model_type = settings.get('model_type') or 'unet'
     seed = settings.get('training_seed', settings.get('image_order_seed'))
-    config = training_config(project_dir, images_dir, args.model_type, seed)
+    fraction = lesion_crop_share(settings, args)
+    if fraction is not None and not 0 <= fraction <= 1:
+        raise SystemExit('The lesion-crop share must be between 0 and 1')
+    config = training_config(project_dir, images_dir, args.model_type, seed,
+                             foreground_tile_fraction=fraction)
     if any((project_dir / 'models').glob('*.pkl')):
         raise SystemExit('This project already has checkpoints; a replay '
                          'needs a fresh project')
@@ -301,10 +305,9 @@ def main(argv=None):
     started = time.time()
     # The live trainer is already running, with its first model made, when
     # the user reaches the scan that starts training.
+    # The share of lesion crops travels in the instruction, as from the
+    # painter.
     trainer.start_training(config)
-    if args.foreground_tile_fraction is not None:
-        trainer.train_set.foreground_tile_fraction = (
-            args.foreground_tile_fraction)
 
     snapshot_dir = project_dir / 'replay' / 'snapshots'
     milestones_path = project_dir / 'replay' / 'milestones.jsonl'
@@ -368,7 +371,7 @@ def main(argv=None):
         'project': project_dir.name,
         'model_type': args.model_type,
         'loss_type': args.loss_type,
-        'foreground_tile_fraction': args.foreground_tile_fraction,
+        'foreground_tile_fraction': fraction,
         'training_seed': seed,
         'split_method': settings.get('split_method'),
         'completed': completed,

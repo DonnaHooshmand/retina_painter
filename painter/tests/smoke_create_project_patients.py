@@ -210,12 +210,18 @@ def check_absent_scans_option_is_off_unless_ticked(root):
     widget = _dialog(sync, directory, name='default')
     assert not widget.absent_background_checkbox.isChecked()
     widget.create_project()
-    assert _project(sync, 'default')['absent_scans_as_background'] is False
+    project = _project(sync, 'default')
+    assert project['absent_scans_as_background'] is False
+    # No fixed share of lesion crops: the trainer's sampler adapts.
+    assert project['foreground_tile_fraction'] is None
 
     widget = _dialog(sync, directory, name='clean_scans')
     widget.absent_background_checkbox.setChecked(True)
     widget.create_project()
-    assert _project(sync, 'clean_scans')['absent_scans_as_background'] is True
+    project = _project(sync, 'clean_scans')
+    assert project['absent_scans_as_background'] is True
+    # Clean scans come with half of the training crops from lesion scans.
+    assert project['foreground_tile_fraction'] == 0.5
 
 
 CHECKS = [

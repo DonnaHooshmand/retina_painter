@@ -265,6 +265,142 @@ def test_train_dataset_falls_back_when_no_foreground_exists(
     assert mask.sum() > 0
 
 
+def test_lesion_crop_share_comes_from_the_project_then_the_trainer_option():
+    trainer = object.__new__(Trainer)
+    resolve = trainer.resolve_foreground_tile_fraction
+
+    # Nothing set anywhere: the sampler stays adaptive.
+    assert resolve({}) == (None, None)
+    assert resolve({'foreground_tile_fraction': None}) == (None, None)
+    # The painter sends a project's own share with start_training.
+    assert resolve({'foreground_tile_fraction': 0.5}) == (
+        0.5, 'project setting')
+    assert resolve({'foreground_tile_fraction': 0}) == (
+        0.0, 'project setting')
+
+    # The trainer option covers projects that set none, and never replaces a
+    # project's own.
+    trainer.foreground_tile_fraction = 0.3
+    assert resolve({}) == (0.3, 'trainer option')
+    assert resolve({'foreground_tile_fraction': 0.5}) == (
+        0.5, 'project setting')
+
+    for bad in (1.5, -0.1, '0.5', True, float('nan')):
+        with pytest.raises(ValueError, match='foreground_tile_fraction'):
+            resolve({'foreground_tile_fraction': bad})
+    with pytest.raises(ValueError, match='between 0 and 1'):
+        Trainer(sync_dir='unused', foreground_tile_fraction=2)
+
+
+def test_start_training_gives_the_lesion_crop_share_to_the_sampler(
+        tmp_path, monkeypatch):
+    annot_dir = tmp_path / 'annotations'
+    annot_dir.mkdir()
+    _write_correction(annot_dir / 'foreground.png', channel=0)
+    for index in range(3):
+        _write_correction(annot_dir / f'background_{index}.png', channel=1)
+    monkeypatch.setattr(
+        model_utils, 'get_latest_model_paths', lambda _model_dir, _count: [])
+    monkeypatch.setattr(
+        trainer_module, 'create_first_model_with_random_weights',
+        lambda _model_dir, model_type, seed: torch.nn.Linear(2, 2))
+
+    def start(instruction_extra, trainer_option=None):
+        trainer = object.__new__(Trainer)
+        trainer.sync_dir = str(tmp_path)
+        trainer.training = False
+        trainer.train_set = None
+        trainer.model_type = 'unet'
+        trainer.loss_type = 'auto'
+        trainer.in_w = trainer.out_w = 4
+        trainer.foreground_tile_fraction = trainer_option
+        messages = []
+        trainer.log = messages.append
+        trainer.start_training({
+            'train_annot_dir': str(annot_dir),
+            'dataset_dir': str(tmp_path / 'images'),
+            'model_dir': str(tmp_path / 'models'),
+            'message_dir': str(tmp_path / 'messages'),
+            **instruction_extra})
+        return trainer, messages
+
+    # A project without the setting keeps the adaptive share (1 of 4 pools).
+    trainer, messages = start({})
+    assert trainer.training
+    assert trainer.train_set.foreground_tile_fraction is None
+    assert trainer.train_set.effective_foreground_tile_fraction() == 0.25
+    assert 'Foreground tile target: adaptive' in messages
+
+    # A project that asks for half gets half, whatever the pools hold.
+    trainer, messages = start({'foreground_tile_fraction': 0.5})
+    assert trainer.train_set.foreground_tile_fraction == 0.5
+    assert trainer.train_set.effective_foreground_tile_fraction() == 0.5
+    assert ('Foreground tile target: fixed at 50% (project setting)'
+            in messages)
+
+    # The trainer option applies to a project that sets none.
+    trainer, messages = start({}, trainer_option=0.3)
+    assert trainer.train_set.foreground_tile_fraction == 0.3
+    assert ('Foreground tile target: fixed at 30% (trainer option)'
+            in messages)
+
+    # A value that cannot be used stops the instruction before anything
+    # changes, so it is retried and reported like any failed instruction.
+    trainer = object.__new__(Trainer)
+    trainer.training = False
+    trainer.train_set = None
+    with pytest.raises(ValueError, match='between 0 and 1'):
+        trainer.start_training({'foreground_tile_fraction': 1.5})
+    assert not trainer.training and trainer.train_set is None
+
+
+@pytest.mark.parametrize('entry_point', ['main.py', 'start-trainer'])
+def test_both_entry_points_pass_the_lesion_crop_share(
+        entry_point, monkeypatch):
+    import importlib.util
+    import main as main_module
+
+    created = []
+
+    class RecordingTrainer:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+        def main_loop(self):
+            pass
+
+    if entry_point == 'main.py':
+        monkeypatch.setattr(main_module, 'Trainer', RecordingTrainer)
+        run = main_module.main
+    else:
+        # start-trainer is trainer/src/__init__.py:start, which imports
+        # Trainer when it is called.
+        spec = importlib.util.spec_from_file_location(
+            'start_trainer_entry', os.path.join(src_dir, '__init__.py'))
+        package = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(package)
+        monkeypatch.setattr(trainer_module, 'Trainer', RecordingTrainer)
+        run = package.start
+
+    monkeypatch.setattr(sys, 'argv', ['trainer', '--syncdir', 'sync'])
+    run()
+    assert created[-1]['foreground_tile_fraction'] is None
+    assert created[-1]['candidate_rollback_patience'] is None
+
+    monkeypatch.setattr(sys, 'argv', [
+        'trainer', '--syncdir', 'sync', '--foreground-tile-fraction', '0.5',
+        '--candidate-rollback-patience', '3'])
+    run()
+    assert created[-1]['foreground_tile_fraction'] == 0.5
+    assert created[-1]['candidate_rollback_patience'] == 3
+
+    monkeypatch.setattr(sys, 'argv', [
+        'trainer', '--syncdir', 'sync', '--foreground-tile-fraction', '1.5'])
+    with pytest.raises(SystemExit):
+        run()
+    assert len(created) == 2
+
+
 def test_same_project_segment_uses_stable_ui_checkpoint(
         tmp_path, monkeypatch):
     trainer = object.__new__(Trainer)

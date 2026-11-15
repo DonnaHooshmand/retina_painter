@@ -97,8 +97,21 @@ def main() -> None:
             "explicit choices support controlled loss ablations"
         ),
     )
+    parser.add_argument(
+        "--foreground-tile-fraction",
+        type=float,
+        default=None,
+        help=(
+            "fixed share (0 to 1) of training crops drawn from scans with a "
+            "lesion mark, for projects that do not set their own; by default "
+            "the share adapts to the annotations collected"
+        ),
+    )
 
     args = parser.parse_args()
+    if (args.foreground_tile_fraction is not None
+            and not 0 <= args.foreground_tile_fraction <= 1):
+        parser.error("--foreground-tile-fraction must be between 0 and 1")
     trainer = Trainer(sync_dir=args.syncdir, patch_size=args.patchsize,
                       max_workers=args.maxworkers,
                       max_batch_size=args.maxbatchsize,
@@ -107,7 +120,8 @@ def main() -> None:
                       max_epochs_without_progress=args.max_epochs_without_progress,
                       candidate_rollback_patience=args.candidate_rollback_patience,
                       min_foreground_val_files_for_rollback=(
-                          args.min_foreground_val_files_for_rollback))
+                          args.min_foreground_val_files_for_rollback),
+                      foreground_tile_fraction=args.foreground_tile_fraction)
     trainer.main_loop()
 
 if __name__ == "__main__":

@@ -746,6 +746,27 @@ def test_runner_adapts_to_an_older_trainer_and_takes_a_time_budget():
         ['--project', 'p']).max_minutes is None
 
 
+def test_lesion_crop_share_is_the_flag_then_the_project_setting(tmp_path):
+    parse = run_offline_training.parse_args
+    share = run_offline_training.lesion_crop_share
+    project_setting = {'foreground_tile_fraction': 0.5}
+
+    assert share({}, parse(['--project', 'p'])) is None
+    # A painter project that counts absent scans as clean stores its share.
+    assert share(project_setting, parse(['--project', 'p'])) == 0.5
+    assert share(project_setting, parse(
+        ['--project', 'p', '--foreground-tile-fraction', '0.27'])) == 0.27
+
+    # It travels in the instruction, as from the painter, and is left out
+    # when the sampler is to adapt.
+    config = run_offline_training.training_config
+    assert 'foreground_tile_fraction' not in config(
+        tmp_path, tmp_path / 'images', 'unet', 0)
+    assert config(tmp_path, tmp_path / 'images', 'unet', 0,
+                  foreground_tile_fraction=0.5)[
+                      'foreground_tile_fraction'] == 0.5
+
+
 def test_seed_worker_makes_worker_randomness_repeatable():
     import random
 

@@ -12,7 +12,9 @@ and confirm that
   there are none;
 * red marks on an absent scan still block the review and are never replaced;
 * a project without the option keeps sparse strokes only;
-* the state survives closing and reopening the project.
+* the state survives closing and reopening the project;
+* training starts with half of the crops taken from scans with a lesion mark,
+  and only in a project with the option.
 
 Run directly with the painter environment (PyQt5, no pytest needed):
 
@@ -31,7 +33,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from smoke_annotation_session import (  # noqa: E402
     NAMES, QtGui, _create, _open, _paint, _paths)
 from smoke_review_project import mask_io, patched_painter  # noqa: E402
-from review_utils import load_review  # noqa: E402
+from review_utils import (  # noqa: E402
+    load_review, new_project_foreground_tile_fraction)
 
 PIXELS = 600 * 600
 GREEN_STROKE = 80 * 12
@@ -44,8 +47,11 @@ def _session(root, enabled=True):
     _create(sync)
     project, config_path, _ = _paths(sync)
     if enabled:
+        # What the New Project dialog stores when the option is ticked.
         config = json.loads(config_path.read_text(encoding='utf-8'))
         config['absent_scans_as_background'] = True
+        config['foreground_tile_fraction'] = (
+            new_project_foreground_tile_fraction(True))
         config_path.write_text(json.dumps(config, indent=2), encoding='utf-8')
     return sync, project, _open(sync)
 
@@ -313,6 +319,30 @@ def check_reopening_the_project_keeps_the_scan_clean(root, dialogs):
     assert not dialogs
 
 
+def check_training_starts_with_half_the_crops_from_lesion_scans(
+        root, dialogs):
+    def start_instruction(directory, enabled):
+        _sync, _project, window = _session(directory, enabled=enabled)
+        sent = []
+        window.send_instruction = (
+            lambda name, content: sent.append((name, dict(content))))
+        try:
+            window.start_training()
+        finally:
+            _close(window)
+        (name, content), = sent
+        assert name == 'start_training'
+        return content
+
+    # Clean scans would otherwise crowd out the crops with a lesion mark.
+    with_option = start_instruction(root / 'on', enabled=True)
+    assert with_option['foreground_tile_fraction'] == 0.5
+    # Other projects send nothing, so the trainer's sampler stays adaptive.
+    without = start_instruction(root / 'off', enabled=False)
+    assert 'foreground_tile_fraction' not in without
+    assert not dialogs
+
+
 CHECKS = [
     check_absent_review_makes_the_whole_scan_background,
     check_returning_shows_own_strokes_and_rewrites_nothing,
@@ -320,6 +350,7 @@ CHECKS = [
     check_red_marks_on_an_absent_scan_are_never_replaced,
     check_projects_without_the_option_keep_sparse_strokes,
     check_reopening_the_project_keeps_the_scan_clean,
+    check_training_starts_with_half_the_crops_from_lesion_scans,
 ]
 
 

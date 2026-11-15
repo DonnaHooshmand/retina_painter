@@ -240,6 +240,11 @@ class RetinaPainter(QtWidgets.QMainWindow):
         # True while the current scan's annotation file is that whole-scan
         # background and the scene shows the user's own strokes instead.
         self.annot_is_absent_background = False
+        # Fixed share of training crops from scans with a lesion mark, sent
+        # with start_training. Absent in older projects and None when unset:
+        # the trainer then decides (adaptive unless started with its own).
+        self.foreground_tile_fraction = settings.get(
+            'foreground_tile_fraction', None)
         self.image_fnames = settings['file_names']
         self.seg_dir = self.proj_location / 'segmentations'
         self.log_dir = self.proj_location / 'logs'
@@ -1476,6 +1481,8 @@ class RetinaPainter(QtWidgets.QMainWindow):
             content["model_type"] = self.model_type
         if self.training_seed is not None:
             content["training_seed"] = self.training_seed
+        if self.foreground_tile_fraction is not None:
+            content["foreground_tile_fraction"] = self.foreground_tile_fraction
         self.send_instruction('start_training', content)
 
     def seg_checkbox_change(self, state):

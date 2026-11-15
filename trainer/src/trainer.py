@@ -83,6 +83,26 @@ def build_optimizer(model, model_type):
                            momentum=0.99, nesterov=True)
 
 
+def checked_foreground_tile_fraction(value, source):
+    """Return a fixed lesion-crop share as a float in [0, 1], or None.
+
+    None leaves the training sampler adaptive. `source` names where the value
+    came from, for the error message.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f'{source}: foreground_tile_fraction must be a number between '
+            f'0 and 1, not {value!r}')
+    value = float(value)
+    if not 0 <= value <= 1:    # also rejects NaN
+        raise ValueError(
+            f'{source}: foreground_tile_fraction must be between 0 and 1, '
+            f'not {value!r}')
+    return value
+
+
 class Trainer():
 
     def __init__(self, sync_dir=None, patch_size=572,
@@ -94,8 +114,14 @@ class Trainer():
                  candidate_rollback_patience=None,
                  min_foreground_val_files_for_rollback=2,
                  provisional_ui_loss_margin=0.01,
+                 foreground_tile_fraction=None,
                  ):
 
+        # Fixed share of training crops drawn from scans with a lesion mark,
+        # for projects that do not set their own (see
+        # resolve_foreground_tile_fraction). None keeps the sampler adaptive.
+        self.foreground_tile_fraction = checked_foreground_tile_fraction(
+            foreground_tile_fraction, '--foreground-tile-fraction')
         if (candidate_rollback_patience is not None
                 and candidate_rollback_patience < 1):
             raise ValueError('candidate_rollback_patience must be at least 1 '
@@ -271,7 +297,8 @@ class Trainer():
     def fix_config_paths(self, old_config):
         """ get paths relative to local machine """
         new_config = {}
-        non_path_keys = {'file_names', 'format', 'model_type'}
+        non_path_keys = {'file_names', 'format', 'model_type',
+                         'foreground_tile_fraction'}
         for k, v in old_config.items():
             if k in non_path_keys:
                 # Identifiers, filenames, and output formats are not paths.
@@ -399,8 +426,30 @@ class Trainer():
             self.out_w = self.patch_size - 72
         self.model = None  # force model reload with new architecture
 
+    def resolve_foreground_tile_fraction(self, config):
+        """Return (fraction, source) for the project about to be trained.
+
+        The fraction is the fixed share of training crops drawn from scans
+        with a lesion mark. A project's own setting, sent by the painter in
+        the start_training instruction, wins over the trainer option, as with
+        model_type. (None, None) leaves the sampler adaptive.
+        """
+        project_fraction = checked_foreground_tile_fraction(
+            config.get('foreground_tile_fraction'),
+            'start_training instruction')
+        if project_fraction is not None:
+            return project_fraction, 'project setting'
+        trainer_fraction = getattr(self, 'foreground_tile_fraction', None)
+        if trainer_fraction is not None:
+            return trainer_fraction, 'trainer option'
+        return None, None
+
     def start_training(self, config):
         if not self.training:
+            # Checked before anything changes, so a bad value leaves the
+            # trainer as it was.
+            foreground_fraction, fraction_source = (
+                self.resolve_foreground_tile_fraction(config))
             if 'model_type' in config:
                 self.apply_model_type(config['model_type'])
             self.configure_training_seed(config.get('training_seed'))
@@ -414,9 +463,18 @@ class Trainer():
             self.best_val_loss = float('inf')
             self.msg_dir = self.train_config['message_dir']
             model_dir = self.train_config['model_dir']
-            self.train_set = TrainDataset(self.train_config['train_annot_dir'],
-                                          self.train_config['dataset_dir'],
-                                          self.in_w, self.out_w)
+            self.train_set = TrainDataset(
+                self.train_config['train_annot_dir'],
+                self.train_config['dataset_dir'],
+                self.in_w, self.out_w,
+                foreground_tile_fraction=foreground_fraction)
+            sampler_message = (
+                'Foreground tile target: adaptive'
+                if foreground_fraction is None else
+                f'Foreground tile target: fixed at {foreground_fraction:.0%} '
+                f'({fraction_source})')
+            print(sampler_message, flush=True)
+            self.log(sampler_message)
             resolved_loss = resolve_training_loss_type(
                 self.model_type, self.loss_type)
             loss_message = (f'Training loss: {resolved_loss} '

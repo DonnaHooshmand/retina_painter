@@ -37,6 +37,7 @@ from project_order import (filename_parts, fixed_train_val_split,
                            patient_ids_from_csv,
                            patient_ids_from_filename_part, seeded_file_order,
                            suggest_patient_part)
+from review_utils import new_project_foreground_tile_fraction
 
 class CreateProjectWidget(QtWidgets.QWidget):
 
@@ -390,8 +391,9 @@ class CreateProjectWidget(QtWidgets.QWidget):
         self.absent_background_checkbox.setToolTip(
             "When a review is completed as RIPL absent, every pixel of that "
             "scan is used as background for training and validation, without "
-            "any painting. Off: only painted pixels are used, as in "
-            "RootPainter."
+            "any painting. Half of the training crops are then taken from "
+            "scans with a lesion mark, so the clean scans do not crowd them "
+            "out. Off: only painted pixels are used, as in RootPainter."
         )
         self.layout.addWidget(self.absent_background_checkbox)
 
@@ -678,6 +680,10 @@ class CreateProjectWidget(QtWidgets.QWidget):
             # A completed "RIPL absent" review supervises the whole scan as
             # background (off: only painted pixels are supervised).
             'absent_scans_as_background': (
+                self.absent_background_checkbox.isChecked()),
+            # Fixed share of training crops from scans with a lesion mark,
+            # sent to the trainer when training starts (None: adaptive).
+            'foreground_tile_fraction': new_project_foreground_tile_fraction(
                 self.absent_background_checkbox.isChecked())
         }
         # 'classes': self.palette_edit_widget.get_brush_data()

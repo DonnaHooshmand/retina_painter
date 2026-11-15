@@ -87,6 +87,18 @@ the clinician:
 
 Review records and exports are the same with the option on or off.
 
+A project with the option also stores `foreground_tile_fraction: 0.5` and
+sends it when training starts. The trainer then takes half of its training
+crops from scans with a lesion mark. Left to adapt, that share falls as clean
+scans accumulate, and in a replayed session the model then missed a third of
+the lesion scans; with the fixed half it flagged about as many as a model
+trained on strokes alone while clearing far more clean scans
+(`docs/offline_experiments.md`). The trainer prints
+`Foreground tile target: fixed at 50% (project setting)` when training starts.
+To give the setting to a project created before it existed, add
+`"foreground_tile_fraction": 0.5` to its `.seg_proj`; it takes effect the next
+time training starts.
+
 Use **Project > Export completed reviews** to create a timestamped directory
 under `review_exports/`. It contains:
 

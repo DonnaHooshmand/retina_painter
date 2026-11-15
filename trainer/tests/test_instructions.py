@@ -233,3 +233,18 @@ def test_fix_config_paths_preserves_ui_model_type(sync_dir):
     assert fixed['training_seed'] == 42
     assert fixed['model_dir'] == os.path.join(
         sync_dir, 'projects', 'trial', 'models')
+
+
+def test_fix_config_paths_leaves_the_lesion_crop_share_alone(sync_dir):
+    trainer = create_trainer(sync_dir)
+
+    fixed = trainer.fix_config_paths({
+        'foreground_tile_fraction': 0.5,
+        'model_dir': 'projects/trial/models',
+    })
+    assert fixed['foreground_tile_fraction'] == 0.5
+
+    # A hand-edited project file may hold the share as text. It must reach
+    # the trainer's range check as written, not turned into a path.
+    as_text = trainer.fix_config_paths({'foreground_tile_fraction': '0.5'})
+    assert as_text['foreground_tile_fraction'] == '0.5'

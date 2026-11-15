@@ -37,6 +37,11 @@ VALID_RECONSTRUCTION_MODES = (
 )
 # The painter's background brush colour (graphics_scene.background_color).
 BACKGROUND_STROKE_RGBA = (0, 255, 0, 180)
+# Share of training crops drawn from scans with a lesion mark in a project
+# that counts absent scans as clean scans. Left to adapt, that share falls as
+# clean scans accumulate and lesion scans are lost; held at half they are kept
+# (session replays in docs/offline_experiments.md).
+ABSENT_SCANS_FOREGROUND_TILE_FRACTION = 0.5
 DECISION_PREVIEW_LABELS = {
     "present": ("RIPL PRESENT", (255, 70, 70, 255)),
     "absent": ("RIPL ABSENT", (40, 255, 90, 255)),
@@ -146,6 +151,17 @@ def create_decision_audit_preview(image_path, segmentation_path,
     output_path = Path(output_path)
     _atomic_save_png(preview.convert("RGB"), output_path)
     return output_path
+
+
+def new_project_foreground_tile_fraction(absent_scans_as_background):
+    """The lesion-crop share a new project stores and sends to the trainer.
+
+    None leaves the trainer's sampler adaptive, as in every project that does
+    not count absent scans as clean scans.
+    """
+    if absent_scans_as_background:
+        return ABSENT_SCANS_FOREGROUND_TILE_FRACTION
+    return None
 
 
 def absent_review_is_complete(record) -> bool:

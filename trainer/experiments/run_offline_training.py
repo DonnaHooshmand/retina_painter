@@ -143,10 +143,23 @@ def parse_args(argv=None):
     return build_parser().parse_args(argv)
 
 
-def training_config(project_dir, images_dir, model_type, seed):
+def lesion_crop_share(settings, args):
+    """Fixed share of lesion crops for a run: the flag, else the project's.
+
+    ``None`` leaves the sampler adaptive. The painter stores
+    ``foreground_tile_fraction`` in projects that count absent scans as clean
+    scans, so such a project trains the same way offline.
+    """
+    if args.foreground_tile_fraction is not None:
+        return args.foreground_tile_fraction
+    return settings.get('foreground_tile_fraction')
+
+
+def training_config(project_dir, images_dir, model_type, seed,
+                    foreground_tile_fraction=None):
     """The ``start_training`` instruction the painter would send."""
     project_dir = Path(project_dir)
-    return {
+    config = {
         'model_dir': str(project_dir / 'models'),
         'dataset_dir': str(images_dir),
         'train_annot_dir': str(project_dir / 'annotations' / 'train'),
@@ -157,6 +170,9 @@ def training_config(project_dir, images_dir, model_type, seed):
         'model_type': model_type,
         'training_seed': seed,
     }
+    if foreground_tile_fraction is not None:
+        config['foreground_tile_fraction'] = foreground_tile_fraction
+    return config
 
 
 def load_project(project_dir):
@@ -399,8 +415,10 @@ def main(argv=None):
     settings, sync_dir, images_dir = load_project(project_dir)
     args.model_type = settings.get('model_type') or 'unet'
     seed = settings.get('training_seed', settings.get('image_order_seed'))
+    fraction = lesion_crop_share(settings, args)
 
-    config = training_config(project_dir, images_dir, args.model_type, seed)
+    config = training_config(project_dir, images_dir, args.model_type, seed,
+                             foreground_tile_fraction=fraction)
     for key in ('train_annot_dir', 'val_annot_dir'):
         if not any(Path(config[key]).glob('*.png')):
             raise SystemExit(f'No annotations found in {config[key]}')
@@ -436,12 +454,15 @@ def main(argv=None):
           f'validation_cache={"off" if args.no_validation_cache else "on"}',
           flush=True)
     trainer.start_training(config)
-    if args.foreground_tile_fraction is not None:
+    if fraction is not None:
+        # The working-tree trainer has already taken the share from the
+        # instruction; an older --trainer-commit source may only have the
+        # sampler attribute, or nothing.
         if not hasattr(trainer.train_set, 'foreground_tile_fraction'):
             raise SystemExit('This trainer source has no fixed lesion-crop '
-                             'share; drop --foreground-tile-fraction')
-        trainer.train_set.foreground_tile_fraction = (
-            args.foreground_tile_fraction)
+                             'share; drop --foreground-tile-fraction (or '
+                             'the project\'s foreground_tile_fraction)')
+        trainer.train_set.foreground_tile_fraction = fraction
 
     train_started = time.time()
 
@@ -471,7 +492,7 @@ def main(argv=None):
         'project': project_dir.name,
         'model_type': args.model_type,
         'loss_type': args.loss_type,
-        'foreground_tile_fraction': args.foreground_tile_fraction,
+        'foreground_tile_fraction': fraction,
         'training_seed': seed,
         'stop_reason': trainer.stop_reason,
         'epochs_run': epochs_run,

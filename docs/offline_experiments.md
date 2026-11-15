@@ -362,6 +362,209 @@ display cut-off cannot bring them back. The supervised pixels swung from 6 to
 Still short of the all-at-once figure, and in two folds the model on screen
 did not change between two milestones (about 15 epochs without a promotion).
 
+**Absent decisions as clean scans, lesion crops held at half of each epoch**
+(`replay_sparse_absent_fg50_retfound_rfa`, 2026-11-14, commit `ea7bf36`; same
+folds, scan order and split; `--supervision sparse_absent` with
+`--foreground-tile-fraction 0.5` after `--`). Every epoch of every fold logged
+`foreground tile target 50% (fixed)`.
+
+| Scans viewed | AUROC | Paired AUROC difference vs sparse | vs absent, adaptive | Positive flagged | Negative cleared | False blobs per negative scan | Lesion scans with no blob at any cut-off |
+|---|---|---|---|---|---|---|---|
+| 25 | 0.49 [0.43, 0.55] | -0.01 [-0.08, +0.06] | -0.04 [-0.09, +0.01] | 100/103 | 5/387 | 3.9 | 0 |
+| 50 | 0.55 [0.49, 0.61] | 0.00 [-0.06, +0.07] | -0.08 [-0.16, 0.00] | 80/103 | 108/387 | 2.5 | 5 |
+| 100 | 0.74 [0.69, 0.79] | +0.15 [+0.10, +0.21] | +0.07 [+0.02, +0.12] | 93/103 | 142/387 | 1.4 | 2 |
+| 150 | 0.81 [0.76, 0.86] | +0.12 [+0.06, +0.18] | +0.08 [+0.03, +0.14] | 83/103 | 266/387 | 0.45 | 5 |
+| 200 | 0.84 [0.80, 0.89] | +0.14 [+0.09, +0.19] | +0.07 [+0.02, +0.12] | 91/103 | 277/387 | 0.38 | 7 |
+
+At 200 scans the fixed share brings back most of the lesion scans the clean
+scans cost (91 of 103 flagged against 69, +21 points [+11, +32]) and keeps
+most of the clearing (277 of 387 against 293, -4 points [-11, +2]). Against the
+sparse baseline it flags as many lesion scans (91 against 92) and clears 277
+clean scans instead of 102. The end-of-session model is close to the
+all-at-once figure (AUROC 0.87; 84 of 103 and 307 of 387 at 0.5), from 190
+annotated scans in 67 minutes.
+
+What it does not fix:
+
+- **The first 50 scans (17 minutes).** Ranking is no better than chance or the
+  sparse baseline (0.49, 0.55), and at 25 scans the model flags nearly every
+  scan again (5 of 387 cleared; the adaptive share cleared 58). The
+  early-session test below puts this down to training time, not annotations.
+- **The picture at the 0.5 cut-off is not steady.** Lesion scans flagged go
+  100, 80, 93, 83, 91 across the milestones while ranking rises every time,
+  and single folds swing between milestones (one clears 70 of 97 clean scans
+  at 150 scans and 49 at 200; another 44 of 106 at 100 and 91 at 200). The
+  model on screen is chosen on 4 to 8 validation scans with a lesion mark.
+- **Seven lesion scans still hold no blob at any cut-off** at 200 scans (14
+  with the adaptive share, none in the sparse baseline).
+- **Pixel balance is still lopsided.** Lesion pixels are 0.8 to 0.9% of the
+  supervised pixels in the training crops (0.2 to 0.3% with the adaptive
+  share, 8 to 11% with sparse strokes), because a clean crop is supervised
+  everywhere and a lesion crop only on its strokes.
+
+Promotions were more frequent (21 to 24 per fold against 15 to 20; longest
+stretch without one 9 to 11 epochs against 11 to 21), and no milestone showed
+the previous milestone's checkpoint. The intervals cover which patients were
+held out, not run-to-run variation in training; the second seed below measures
+that.
+
+**The same setting on a second trial seed**
+(`replay_sparse_absent_fg50_seed1_retfound_rfa`, 2026-11-14, `--seed 1`: other
+patient folds, scan order, split, initial decoder weights and sampling; working
+tree at `ea7bf36` plus the lesion-crop-share change, the share arriving in the
+instruction). Both runs score the same 490 held-out scans, each scan by a model
+that never saw its patient, so the difference is paired.
+
+| Scans viewed | AUROC, seed 0 | AUROC, seed 1 | Paired difference (seed 1 minus seed 0) | Positive flagged, seed 0 / seed 1 | Negative cleared, seed 0 / seed 1 | False blobs per negative scan | Lesion scans with no blob at any cut-off |
+|---|---|---|---|---|---|---|---|
+| 25 | 0.49 | 0.49 [0.44, 0.55] | 0.00 [-0.08, +0.08] | 100 / 97 | 5 / 21 | 3.9 / 4.6 | 0 / 0 |
+| 50 | 0.55 | 0.65 [0.58, 0.72] | +0.09 [-0.01, +0.19] | 80 / 83 | 108 / 133 | 2.5 / 2.2 | 5 / 4 |
+| 100 | 0.74 | 0.72 [0.66, 0.77] | -0.03 [-0.09, +0.04] | 93 / 92 | 142 / 172 | 1.4 / 1.6 | 2 / 6 |
+| 150 | 0.81 | 0.78 [0.71, 0.83] | -0.04 [-0.09, +0.02] | 83 / 83 | 266 / 230 | 0.45 / 0.64 | 5 / 9 |
+| 200 | 0.84 | 0.78 [0.72, 0.83] | -0.06 [-0.11, -0.02] | 91 / 87 | 277 / 241 | 0.38 / 0.56 | 7 / 9 |
+
+What repeats: no better than chance at 25 scans with nearly every scan
+flagged; AUROC 0.72 to 0.74 at 100 scans; and at 200 scans 84 to 88% of lesion
+scans flagged with 62 to 72% of clean scans cleared. The unsteady picture at
+the 0.5 cut-off repeats too (lesion scans flagged 97, 83, 92, 83, 87; one fold
+clears 65 of 87 clean scans at 50 scans, 7 at 100 and 62 at 200), and one fold
+showed the same checkpoint at 150 and 200 scans after 20 epochs without a
+promotion.
+
+What does not repeat: the end of the session. The second seed ranks 0.06 lower
+[-0.11, -0.02] and clears 9 points fewer clean scans [-16, -3] (flagged -4
+points [-13, +4]). **Two runs of one setting can differ by about 0.06 AUROC and
+9 points of clearing, so a single-run difference of that size between settings
+is not evidence.** Each step of the setting is therefore compared within one
+seed, on the same sessions, below.
+
+**The adaptive share on the second seed**
+(`replay_sparse_absent_seed1_retfound_rfa`, 2026-11-14: the seed-1 sessions
+again, same annotations, without the fixed share. Every sampler line reads
+`(adaptive)`; the target ranged from 9 to 31% and ended at 15 to 19%.)
+
+| Scans viewed | AUROC, adaptive | AUROC, fixed half | Paired difference (half minus adaptive) | Positive flagged, adaptive / half | Negative cleared, adaptive / half | False blobs per negative scan | Lesion scans with no blob at any cut-off |
+|---|---|---|---|---|---|---|---|
+| 25 | 0.55 [0.50, 0.61] | 0.49 | -0.06 [-0.13, +0.01] | 95 / 97 | 45 / 21 | 3.4 / 4.6 | 0 / 0 |
+| 50 | 0.56 [0.49, 0.62] | 0.65 | +0.09 [-0.01, +0.20] | 83 / 83 | 76 / 133 | 2.7 / 2.2 | 0 / 4 |
+| 100 | 0.59 [0.52, 0.65] | 0.72 | +0.13 [+0.06, +0.20] | 52 / 92 | 241 / 172 | 0.91 / 1.6 | 39 / 6 |
+| 150 | 0.79 [0.73, 0.85] | 0.78 | -0.02 [-0.08, +0.04] | 68 / 83 | 341 / 230 | 0.14 / 0.64 | 25 / 9 |
+| 200 | 0.78 [0.71, 0.84] | 0.78 | 0.00 [-0.05, +0.05] | 62 / 87 | 342 / 241 | 0.15 / 0.56 | 30 / 9 |
+
+The fixed half against the adaptive share at 200 scans, same sessions:
+
+| | Seed 0 | Seed 1 |
+|---|---|---|
+| AUROC | +0.07 [+0.02, +0.12] | 0.00 [-0.05, +0.05] |
+| Lesion scans flagged | 91 against 69, +21 points [+11, +32] | 87 against 62, +24 points [+16, +33] |
+| Clean scans cleared | 277 against 293, -4 points [-11, +2] | 241 against 342, -26 points [-31, -21] |
+| Lesion scans with no blob at any cut-off | 7 against 14 | 9 against 30 |
+
+On both seeds the fixed half flags 21 to 24 points more lesion scans and
+leaves far fewer lesion scans with no blob at any cut-off; with the adaptive
+share on seed 1, 30 of the 103 lesion scans cannot be shown at any display
+cut-off, and at 100 scans it flags only 52. The cost is clean scans cleared, 4
+to 26 points. Ranking at the end is better on one seed and equal on the other;
+at 100 scans it is better on both (+0.07 and +0.13). The fixed half is
+therefore a move toward sensitivity that costs no ranking, not a ranking gain
+that can be counted on.
+
+**Strokes only on the second seed, and the three settings on both seeds**
+(`replay_sparse_seed1_retfound_rfa`, 2026-11-14: the seed-1 sessions with
+sparse strokes only, 117 to 126 annotated scans per fold instead of 185 to
+191.) Strokes only at 25, 50, 100, 150 and 200 scans: AUROC 0.48, 0.51, 0.58,
+0.68, 0.69; lesion scans flagged 76, 103, 92, 93, 92 of 103; clean scans
+cleared 87, 0, 50, 120, 135 of 387. It repeats the first baseline (seed 1
+minus seed 0 at 200 scans: AUROC -0.02 [-0.08, +0.05], flagged 0 points,
+cleared +9 points [-1, +18]).
+
+Model on screen after 200 scans (67 minutes), 0.5 cut-off, 103 lesion scans
+and 387 clean scans held out, seed 0 / seed 1:
+
+| Setting | AUROC | Lesion scans flagged | Clean scans cleared | False blobs per clean scan | Lesion scans with no blob at any cut-off |
+|---|---|---|---|---|---|
+| Strokes only | 0.70 / 0.69 | 92 / 92 | 102 / 135 | 3.6 / 4.5 | 0 / 0 |
+| + absent decisions as clean scans | 0.78 / 0.78 | 69 / 62 | 293 / 342 | 0.3 / 0.15 | 14 / 30 |
+| + lesion crops held at half | 0.84 / 0.78 | 91 / 87 | 277 / 241 | 0.38 / 0.56 | 7 / 9 |
+
+Paired differences on the same sessions at 200 scans:
+
+| Comparison | Seed | AUROC | Lesion scans flagged | Clean scans cleared |
+|---|---|---|---|---|
+| Full setting minus strokes only | 0 | +0.14 [+0.09, +0.19] | -1 point [-8, +6] | +45 points [+39, +51] |
+| | 1 | +0.09 [+0.03, +0.16] | -5 points [-13, +2] | +27 points [+19, +36] |
+| Clean scans alone minus strokes only | 0 | +0.08 [+0.01, +0.14] | -22 points | +49 points |
+| | 1 | +0.09 [+0.03, +0.16] | -29 points [-40, -19] | +54 points [+46, +61] |
+| Fixed half minus adaptive share | 0 | +0.07 [+0.02, +0.12] | +21 points [+11, +32] | -4 points [-11, +2] |
+| | 1 | 0.00 [-0.05, +0.05] | +24 points [+16, +33] | -26 points [-31, -21] |
+
+What holds on both seeds:
+
+- The full setting ranks better than strokes alone (+0.09 to +0.14), clears 27
+  to 45 points more clean scans, and puts 0.4 to 0.6 false blobs on a clean
+  scan instead of 3.6 to 4.5, without flagging significantly fewer lesion
+  scans.
+- Clean scans alone buy the clearing but lose 22 to 29 points of lesion scans,
+  and 14 to 30 lesion scans then hold no blob at any cut-off. The fixed half is
+  what gets them back.
+- Strokes only never loses a lesion scan entirely, and clears few clean scans
+  at any point of the session.
+
+What is still open after these runs: the full setting's end of session varies
+between runs (AUROC 0.78 and 0.84, clean scans cleared 241 and 277), the
+picture at the 0.5 cut-off is unsteady between milestones in every setting,
+and two seeds are not a distribution. A reported table needs at least a third
+seed per row.
+
+**Is the weak start a shortage of training time or of annotations?**
+(`replay_sparse_absent_fg50_first50_retfound_rfa`, 2026-11-14: the seed-0
+sessions again, stopped after 51 scans, then 45 more minutes of training on
+those scans only; `-- --milestones 25,50 --max-scans 51 --tail-minutes 45
+--foreground-tile-fraction 0.5`.) The folds had run 6 epochs by 25 scans, 14 to
+15 by 51 scans and 61 to 69 by the end.
+
+| Model on screen | Scans viewed | Minutes | Annotated (with lesion mark) | AUROC | Positive flagged | Negative cleared | False blobs per negative scan | Lesion scans with no blob at any cut-off |
+|---|---|---|---|---|---|---|---|---|
+| Seed-0 session, first run | 26 | 9 | 26 (7) | 0.49 | 100/103 | 5/387 | 3.9 | 0 |
+| Same session, this run | 26 | 9 | 26 (7.5) | 0.52 [0.45, 0.58] | 97/103 | 12/387 | 3.8 | 0 |
+| Seed-0 session, first run | 51 | 17 | 51 (12.5) | 0.55 | 80/103 | 108/387 | 2.5 | 5 |
+| Same session, this run | 51 | 17 | 50 (12.5) | 0.65 [0.59, 0.71] | 85/103 | 115/387 | 3.2 | 7 |
+| This run after 45 more minutes, no new scans | 51 | 62 | 50 (12.5) | 0.75 [0.69, 0.81] | 70/103 | 275/387 | 0.52 | 15 |
+| Full session, seed 0 | 200 | 67 | 190 (37) | 0.84 | 91/103 | 277/387 | 0.38 | 7 |
+| Full session, seed 1 | 200 | 67 | 188 (36) | 0.78 | 87/103 | 241/387 | 0.56 | 9 |
+
+- **Clearing clean scans is a matter of training time.** On the same 51 scans,
+  45 more minutes take the model from 115 to 275 of 387 cleared (+41 points
+  [+33, +50]) and from 3.2 to 0.5 false blobs per clean scan. That is as many
+  clean scans as the full 200-scan sessions clear (-0.5 points [-6, +6] against
+  seed 0, +9 points [+2, +16] against seed 1). The blob on nearly every scan in
+  the first 17 minutes is the trainer lagging the annotator, not a lack of
+  labels.
+- **Finding lesion scans is a matter of annotations.** With 12 to 13 scans
+  carrying a lesion mark the longer-trained model flags 70 of 103 (-15 points
+  [-25, -5] from its own 17-minute model) against 87 to 91 with 36 to 37, and
+  15 lesion scans hold no blob at any cut-off.
+- **Ranking is mostly time.** AUROC rises 0.10 [+0.04, +0.17] with no new scan;
+  the 150 further scans of a full session add 0.02 [-0.04, +0.09] (seed 1) to
+  0.09 [+0.03, +0.15] (seed 0).
+- **The early model is not repeatable.** The same session run twice differs by
+  0.10 AUROC at 50 scans [+0.04, +0.16] (0.03 at 25 scans), although the seed
+  is the same: a replay runs in real time, so the epochs do not fall at the
+  same moments. Differences between settings in the first 50 scans, including
+  the adaptive share's 0.64 against 0.55 above, are inside that.
+
+So no change of supervision or sampling is needed for the first 17 minutes;
+more training per session minute is. That is a speed question for the trainer
+and is separate from the setting compared here.
+
+This is the setting a painter project now gets when **Use scans marked RIPL
+absent as clean scans** is ticked: the project stores
+`foreground_tile_fraction: 0.5` and the painter sends it with
+`start_training`. The live trainer also takes `--foreground-tile-fraction F`
+for projects that send none; a project's own setting wins. The runners here
+pass the share the same way, in the instruction: the flag after `--` if given,
+otherwise the project's own setting, otherwise adaptive.
+
 ## Looking at the scans every model gets wrong
 
 When different architectures, losses and training lengths miss the same
@@ -454,7 +657,11 @@ Two variants exist for separating the effects:
   otherwise dominates both loss terms. `--foreground-tile-fraction F` fixes
   the share of crops drawn from lesion-bearing scans, which the adaptive
   sampler lowers when many background-only scans are added (84 lesion-bearing
-  of 316 annotated scans is 0.266 for the combined development set).
+  of 316 annotated scans is 0.266 for the combined development set). Without
+  the flag, a project's own `foreground_tile_fraction` is used (the painter
+  stores 0.5 in projects that count absent scans as clean scans).
+  `prepare_offline_project.py` stores none, so projects it prepares stay
+  adaptive unless the flag is given.
 
 ## Dense supervision
 

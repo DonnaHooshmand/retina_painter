@@ -67,10 +67,20 @@ parser.add_argument('--loss-type',
                     help=("training loss: 'auto' uses combined Dice/CE for "
                           "every model; explicit choices support controlled "
                           "loss ablations"))
+parser.add_argument('--foreground-tile-fraction',
+                    type=float,
+                    default=None,
+                    help=('fixed share (0 to 1) of training crops drawn from '
+                          'scans with a lesion mark, for projects that do not '
+                          'set their own; by default the share adapts to the '
+                          'annotations collected'))
 
 def start():
     from trainer import Trainer
     args = parser.parse_args()
+    if (args.foreground_tile_fraction is not None
+            and not 0 <= args.foreground_tile_fraction <= 1):
+        parser.error('--foreground-tile-fraction must be between 0 and 1')
     if args.syncdir:
         trainer = Trainer(sync_dir=args.syncdir,
                           max_batch_size=args.maxbatchsize,
@@ -80,7 +90,9 @@ def start():
                           candidate_rollback_patience=(
                               args.candidate_rollback_patience),
                           min_foreground_val_files_for_rollback=(
-                              args.min_foreground_val_files_for_rollback))
+                              args.min_foreground_val_files_for_rollback),
+                          foreground_tile_fraction=(
+                              args.foreground_tile_fraction))
     else:
         trainer = Trainer(max_batch_size=args.maxbatchsize,
                           model_type=args.model_type,
@@ -89,5 +101,7 @@ def start():
                           candidate_rollback_patience=(
                               args.candidate_rollback_patience),
                           min_foreground_val_files_for_rollback=(
-                              args.min_foreground_val_files_for_rollback))
+                              args.min_foreground_val_files_for_rollback),
+                          foreground_tile_fraction=(
+                              args.foreground_tile_fraction))
     trainer.main_loop()
