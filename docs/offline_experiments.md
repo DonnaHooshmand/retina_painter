@@ -446,10 +446,10 @@ again, same annotations, without the fixed share. Every sampler line reads
 | Scans viewed | AUROC, adaptive | AUROC, fixed half | Paired difference (half minus adaptive) | Positive flagged, adaptive / half | Negative cleared, adaptive / half | False blobs per negative scan | Lesion scans with no blob at any cut-off |
 |---|---|---|---|---|---|---|---|
 | 25 | 0.55 [0.50, 0.61] | 0.49 | -0.06 [-0.13, +0.01] | 95 / 97 | 45 / 21 | 3.4 / 4.6 | 0 / 0 |
-| 50 | 0.56 [0.49, 0.62] | 0.65 | +0.09 [-0.01, +0.20] | 83 / 83 | 76 / 133 | 2.7 / 2.2 | 0 / 4 |
+| 50 | 0.55 [0.49, 0.62] | 0.65 | +0.09 [-0.01, +0.20] | 83 / 83 | 76 / 133 | 2.7 / 2.2 | 0 / 4 |
 | 100 | 0.59 [0.52, 0.65] | 0.72 | +0.13 [+0.06, +0.20] | 52 / 92 | 241 / 172 | 0.91 / 1.6 | 39 / 6 |
 | 150 | 0.79 [0.73, 0.85] | 0.78 | -0.02 [-0.08, +0.04] | 68 / 83 | 341 / 230 | 0.14 / 0.64 | 25 / 9 |
-| 200 | 0.78 [0.71, 0.84] | 0.78 | 0.00 [-0.05, +0.05] | 62 / 87 | 342 / 241 | 0.15 / 0.56 | 30 / 9 |
+| 200 | 0.77 [0.71, 0.84] | 0.78 | 0.00 [-0.05, +0.05] | 62 / 87 | 342 / 241 | 0.15 / 0.56 | 30 / 9 |
 
 The fixed half against the adaptive share at 200 scans, same sessions:
 
@@ -484,7 +484,7 @@ and 387 clean scans held out, seed 0 / seed 1:
 | Setting | AUROC | Lesion scans flagged | Clean scans cleared | False blobs per clean scan | Lesion scans with no blob at any cut-off |
 |---|---|---|---|---|---|
 | Strokes only | 0.70 / 0.69 | 92 / 92 | 102 / 135 | 3.6 / 4.5 | 0 / 0 |
-| + absent decisions as clean scans | 0.78 / 0.78 | 69 / 62 | 293 / 342 | 0.3 / 0.15 | 14 / 30 |
+| + absent decisions as clean scans | 0.78 / 0.77 | 69 / 62 | 293 / 342 | 0.3 / 0.15 | 14 / 30 |
 | + lesion crops held at half | 0.84 / 0.78 | 91 / 87 | 277 / 241 | 0.38 / 0.56 | 7 / 9 |
 
 Paired differences on the same sessions at 200 scans:
@@ -544,20 +544,20 @@ the three per-seed values.
 | Setting | AUROC | Lesion scans flagged (of 103) | Clean scans cleared (of 387) | False blobs per clean scan | Clinician marks found | Lesion scans with no blob at any cut-off |
 |---|---|---|---|---|---|---|
 | Strokes only | 0.70 / 0.69 / 0.75; mean 0.71 [0.67, 0.76] | 92 / 92 / 82; 86% [81, 91] | 102 / 135 / 182; 36% [32, 40] | 3.6 / 4.5 / 1.5; mean 3.2 | 68% | 0 / 0 / 0 |
-| + absent decisions as clean scans | 0.78 / 0.78 / 0.75; mean 0.77 [0.72, 0.81] | 69 / 62 / 67; 64% [55, 73] | 293 / 342 / 300; 81% [77, 84] | 0.33 / 0.15 / 0.28; mean 0.25 | 60% | 14 / 30 / 25; mean 23 |
-| + lesion crops held at half | 0.84 / 0.78 / 0.78; mean 0.80 [0.76, 0.84] | 91 / 87 / 80; 83% [77, 90] | 277 / 241 / 242; 65% [62, 70] | 0.38 / 0.56 / 0.50; mean 0.48 | 78% | 7 / 9 / 8; mean 8 |
+| + absent decisions as clean scans | 0.78 / 0.77 / 0.75; mean 0.77 [0.72, 0.81] | 69 / 62 / 67; 64% [55, 73] | 293 / 342 / 300; 81% [77, 84] | 0.33 / 0.15 / 0.28; mean 0.25 | 60% | 14 / 30 / 25; mean 23 |
+| + lesion crops held at half | 0.84 / 0.78 / 0.78; mean 0.80 [0.76, 0.84] | 91 / 87 / 80; 83% [77, 89] | 277 / 241 / 242; 65% [62, 70] | 0.38 / 0.56 / 0.50; mean 0.48 | 78% | 7 / 9 / 8; mean 8 |
 
 Paired differences on the same sessions at 200 scans, seed 0 / seed 1 /
 seed 2, then the average over seeds with its patient-level interval:
 
 | Comparison | AUROC | Lesion scans flagged, points | Clean scans cleared, points | Lesion scans with no blob at any cut-off |
 |---|---|---|---|---|
-| Full setting minus strokes only | +0.14 / +0.09 / +0.04; mean +0.09 [+0.06, +0.12] | -1 / -5 / -2; mean -3 [-8, +2] | +45 / +27 / +15; mean +29 [+25, +34] | +7 / +9 / +8 |
-| Clean scans alone minus strokes only | +0.08 / +0.09 / 0.00; mean +0.06 [+0.01, +0.09] | -22 / -29 / -15; mean -22 [-30, -15] | +49 / +53 / +30; mean +44 [+40, +50] | +14 / +30 / +25 |
+| Full setting minus strokes only | +0.14 / +0.09 / +0.04; mean +0.09 [+0.06, +0.12] | -1 / -5 / -2; mean -3 [-8, +2] | +45 / +27 / +16; mean +29 [+25, +34] | +7 / +9 / +8 |
+| Clean scans alone minus strokes only | +0.08 / +0.09 / 0.00; mean +0.05 [+0.01, +0.09] | -22 / -29 / -15; mean -22 [-30, -15] | +49 / +53 / +30; mean +44 [+40, +49] | +14 / +30 / +25 |
 | Fixed half minus adaptive share | +0.07 / 0.00 / +0.04; mean +0.04 [0.00, +0.07] | +21 / +24 / +13; mean +19 [+13, +26] | -4 / -26 / -15; mean -15 [-18, -12] | -7 / -21 / -17 |
 
 On seed 2 alone: full setting minus strokes only, AUROC +0.04 [-0.01, +0.08],
-flagged -2 points [-10, +5], cleared +15 points [+9, +22]; clean scans alone
+flagged -2 points [-10, +5], cleared +16 points [+9, +22]; clean scans alone
 minus strokes only, 0.00 [-0.06, +0.05], -15 points [-24, -5], +30 points
 [+24, +37]; fixed half minus adaptive, +0.04 [-0.02, +0.10], +13 points
 [+3, +22], -15 points [-21, -9].
@@ -565,7 +565,7 @@ minus strokes only, 0.00 [-0.06, +0.05], -15 points [-24, -5], +30 points
 What holds on all three seeds:
 
 - **The full setting clears more clean scans than strokes alone and flags
-  about as many lesion scans.** 15 to 45 points more cleared (mean +29),
+  about as many lesion scans.** 16 to 45 points more cleared (mean +29),
   0.4 to 0.6 false blobs on a clean scan instead of 1.5 to 4.5, and a
   difference in lesion scans flagged that is not significant on any seed
   (mean -3 points [-8, +2]). It also finds more of the clinician's marks
@@ -598,9 +598,9 @@ flagged; clean scans cleared):
 | Scans viewed | Strokes only | + absent decisions as clean scans | + lesion crops held at half | Full setting minus strokes only, AUROC |
 |---|---|---|---|---|
 | 25 | 0.48; 73%; 25% | 0.54; 85%; 19% | 0.50; 96%; 5% | +0.02 [-0.03, +0.06] |
-| 50 | 0.55; 98%; 2% | 0.59; 85%; 20% | 0.59; 81%; 29% | +0.04 [0.00, +0.08] |
-| 100 | 0.60; 95%; 7% | 0.63; 68%; 50% | 0.71; 86%; 43% | +0.12 [+0.08, +0.15] |
-| 150 | 0.72; 93%; 21% | 0.75; 63%; 81% | 0.77; 84%; 56% | +0.06 [+0.02, +0.09] |
+| 50 | 0.55; 98%; 2% | 0.59; 84%; 20% | 0.59; 81%; 29% | +0.04 [0.00, +0.08] |
+| 100 | 0.60; 95%; 6% | 0.63; 68%; 50% | 0.71; 86%; 43% | +0.11 [+0.08, +0.15] |
+| 150 | 0.72; 93%; 21% | 0.75; 62%; 81% | 0.77; 83%; 56% | +0.06 [+0.02, +0.09] |
 | 200 | 0.71; 86%; 36% | 0.77; 64%; 81% | 0.80; 83%; 65% | +0.09 [+0.06, +0.12] |
 
 No setting ranks better than chance at 25 scans, and all three sit at 0.55 to
@@ -610,6 +610,96 @@ lesion scans flagged 99, 87, 80, 92, 80; clean scans cleared 34, 99, 188, 150,
 242). Both are the open points named above (trainer speed in the first 17
 minutes; a model on screen chosen on few validation lesion scans), not
 questions about the setting.
+
+**The U-Net on the same sessions, strokes only** (`replay_sparse_unet`,
+`replay_sparse_seed1_unet`, `replay_sparse_seed2_unet`, 2026-11-15,
+`--model-type unet --supervision sparse`, seeds 0, 1 and 2, commit `09c5426`
+with a clean working tree. In all twelve folds no patient is on two sides, no
+held-out scan was annotated, every sampler line reads `(adaptive)`, rollback
+is off, the batch size is 12 and the folds ran 67 to 71 epochs.)
+
+This is the comparison row for the model: RootPainter's U-Net, trained from
+scratch with RootPainter's optimiser (SGD, learning rate 0.01, Nesterov
+momentum 0.99), on the strokes alone. The trial seed fixes the patient folds,
+the viewing order and the split whatever the model, so each run replays
+exactly the sessions of the RETFound-RFA runs of the same seed and the
+differences are paired. It is the U-Net inside RetinaPainter's trainer (same
+sampler, loss, validation and checkpoint rule as the other rows), not the
+unmodified upstream RootPainter trainer: `--trainer-commit` does not apply to
+a session replay.
+
+Model on screen after 200 scans (67 minutes), 0.5 cut-off, seed 0 / seed 1 /
+seed 2, then the average over the three seeds with its patient-level interval:
+
+| Model and setting | AUROC | Lesion scans flagged (of 103) | Clean scans cleared (of 387) | False blobs per clean scan | Clinician marks found | Lesion scans with no blob at any cut-off |
+|---|---|---|---|---|---|---|
+| U-Net, strokes only | 0.51 / 0.53 / 0.63; mean 0.56 [0.53, 0.59] | 103 / 103 / 102; 99.7% [98.9, 100] | 0 / 6 / 29; 3% [2, 4] | 7.2 / 5.4 / 2.9; mean 5.2 | 66% | 0 / 0 / 0 |
+| RETFound-RFA, strokes only | 0.70 / 0.69 / 0.75; mean 0.71 [0.67, 0.76] | 92 / 92 / 82; 86% [81, 91] | 102 / 135 / 182; 36% [32, 40] | 3.6 / 4.5 / 1.5; mean 3.2 | 68% | 0 / 0 / 0 |
+| RETFound-RFA, full setting | 0.84 / 0.78 / 0.78; mean 0.80 [0.76, 0.84] | 91 / 87 / 80; 83% [77, 89] | 277 / 241 / 242; 65% [62, 70] | 0.38 / 0.56 / 0.50; mean 0.48 | 78% | 7 / 9 / 8; mean 8 |
+
+Paired differences on the same sessions at 200 scans, seed 0 / seed 1 /
+seed 2, then the average over seeds with its patient-level interval:
+
+| Comparison | AUROC | Lesion scans flagged, points | Clean scans cleared, points | False blobs per clean scan | Clinician marks found, points |
+|---|---|---|---|---|---|
+| RETFound-RFA minus U-Net, both on strokes only | +0.19 / +0.16 / +0.12; mean +0.15 [+0.11, +0.20] | -11 / -11 / -19; mean -14 [-19, -9] | +26 / +33 / +40; mean +33 [+29, +37] | -3.6 / -0.9 / -1.4; mean -2.0 [-2.4, -1.6] | +2 [-5, +8] |
+| RETFound-RFA full setting minus U-Net strokes only | +0.33 / +0.25 / +0.15; mean +0.24 [+0.19, +0.29] | -12 / -16 / -21; mean -16 [-23, -10] | +72 / +61 / +55; mean +62 [+59, +67] | -6.8 / -4.8 / -2.4; mean -4.7 [-5.0, -4.4] | +12 [+5, +18] |
+
+On each seed alone, RETFound-RFA minus U-Net on the same strokes: AUROC +0.19
+[+0.12, +0.25], +0.16 [+0.08, +0.23] and +0.12 [+0.05, +0.18]; clean scans
+cleared +26 points [+20, +33], +33 [+26, +40] and +40 [+34, +45].
+
+Through the session, averaged over the three seeds (AUROC; lesion scans
+flagged; clean scans cleared; false blobs per clean scan):
+
+| Scans viewed | U-Net, strokes only | RETFound-RFA, strokes only | RETFound-RFA minus U-Net on strokes, AUROC | Full setting minus U-Net, AUROC |
+|---|---|---|---|---|
+| 25 | 0.50; 88%; 14%; 15.6 | 0.48; 73%; 25%; 10.1 | -0.02 [-0.06, +0.02] | -0.01 [-0.05, +0.04] |
+| 50 | 0.50; 82%; 18%; 10.5 | 0.55; 98%; 2%; 12.7 | +0.05 [+0.01, +0.09] | +0.09 [+0.04, +0.14] |
+| 100 | 0.50; 92%; 6%; 7.1 | 0.60; 95%; 6%; 7.6 | +0.10 [+0.05, +0.14] | +0.21 [+0.16, +0.26] |
+| 150 | 0.52; 98%; 3%; 4.7 | 0.72; 93%; 21%; 4.8 | +0.20 [+0.14, +0.25] | +0.25 [+0.20, +0.31] |
+| 200 | 0.56; 99.7%; 3%; 5.2 | 0.71; 86%; 36%; 3.2 | +0.15 [+0.11, +0.20] | +0.24 [+0.19, +0.29] |
+
+The U-Net by seed (AUROC; lesion scans flagged of 103; clean scans cleared of
+387):
+
+| Scans viewed | Seed 0 | Seed 1 | Seed 2 |
+|---|---|---|---|
+| 25 | 0.52; 103; 0 | 0.50; 79; 101 | 0.50; 90; 59 |
+| 50 | 0.52; 103; 1 | 0.50; 52; 201 | 0.48; 99; 8 |
+| 100 | 0.50; 103; 0 | 0.51; 83; 62 | 0.49; 99; 8 |
+| 150 | 0.49; 101; 2 | 0.56; 103; 4 | 0.51; 98; 28 |
+| 200 | 0.51 [0.46, 0.56]; 103; 0 | 0.53 [0.47, 0.58]; 103; 6 | 0.63 [0.57, 0.68]; 102; 29 |
+
+- **In a one-hour session the U-Net does not separate lesion scans from clean
+  scans.** It ranks at chance through 150 scans on every seed and ends at
+  0.56; at the 0.5 cut-off it puts a blob on every scan (0 to 29 of 387 clean
+  scans cleared, 2.9 to 7.2 false blobs on each). Its "all lesion scans
+  flagged" is therefore not detection.
+- **It is the model, not the scoring.** The U-Net learns the strokes: its
+  training loss falls and it finds 66% of the clinician's marks on held-out
+  scans, as many as RETFound-RFA on the same strokes (68%, +2 points
+  [-5, +8]). The two models also paint about as many false blobs on a clean
+  scan through 150 scans (4.7 and 4.8 at 150 scans; 5.2 and 3.2 at 200). What
+  differs is the confidence: 62 to 81 of the 103 lesion scans and 144 to 298
+  of the 387 clean scans carry a U-Net blob at the highest confidence step,
+  so the blob score cannot order them and the ranking is chance by ties.
+- **RETFound-RFA ranks 0.15 better on the same strokes** ([+0.11, +0.20],
+  significant on each seed) and clears 33 points more clean scans at 200
+  scans. The ranking difference appears at 50 scans and grows (+0.05, +0.10,
+  +0.20, +0.15 at 50, 100, 150 and 200 scans).
+- **RetinaPainter's full setting against the U-Net starting point**: AUROC
+  0.80 against 0.56, 65% against 3% of clean scans cleared, 0.48 against 5.2
+  false blobs on a clean scan, and 78% against 66% of the clinician's marks
+  found. Of the +0.24 in ranking, +0.15 comes with the model and +0.09 with
+  the supervision and sampling.
+- **This is a statement about a one-hour session, not about the U-Net.** On
+  seed 2 it starts to rank in the last 50 scans (0.51 to 0.63), and an earlier
+  U-Net trained for longer on all the strokes at once
+  (`combined_sparse_unet_seed0_norollback`) reached AUROC 0.70 to 0.79 by
+  largest predicted blob on the 90 validation scans. What the row shows is
+  that the U-Net needs more time and annotations than a session of this
+  length gives, on data where four scans in five are clean.
 
 **Is the weak start a shortage of training time or of annotations?**
 (`replay_sparse_absent_fg50_first50_retfound_rfa`, 2026-11-14: the seed-0
