@@ -494,7 +494,7 @@ Paired differences on the same sessions at 200 scans:
 | Full setting minus strokes only | 0 | +0.14 [+0.09, +0.19] | -1 point [-8, +6] | +45 points [+39, +51] |
 | | 1 | +0.09 [+0.03, +0.16] | -5 points [-13, +2] | +27 points [+19, +36] |
 | Clean scans alone minus strokes only | 0 | +0.08 [+0.01, +0.14] | -22 points | +49 points |
-| | 1 | +0.09 [+0.03, +0.16] | -29 points [-40, -19] | +54 points [+46, +61] |
+| | 1 | +0.09 [+0.03, +0.16] | -29 points [-40, -19] | +53 points [+46, +61] |
 | Fixed half minus adaptive share | 0 | +0.07 [+0.02, +0.12] | +21 points [+11, +32] | -4 points [-11, +2] |
 | | 1 | 0.00 [-0.05, +0.05] | +24 points [+16, +33] | -26 points [-31, -21] |
 
@@ -514,7 +514,102 @@ What is still open after these runs: the full setting's end of session varies
 between runs (AUROC 0.78 and 0.84, clean scans cleared 241 and 277), the
 picture at the 0.5 cut-off is unsteady between milestones in every setting,
 and two seeds are not a distribution. A reported table needs at least a third
-seed per row.
+seed per row; that seed follows.
+
+**The three settings on a third seed, and the three-seed table**
+(`replay_sparse_absent_fg50_seed2_retfound_rfa`,
+`replay_sparse_absent_seed2_retfound_rfa`, `replay_sparse_seed2_retfound_rfa`,
+2026-11-15, `--seed 2`, commit `08ab2bf` with a clean working tree. In all
+twelve folds no patient is on two sides, no held-out scan was annotated, every
+sampler line reads `(fixed)` at 50% or `(adaptive)` as intended, and rollback
+is off.)
+
+Seed 2 through the session (AUROC; lesion scans flagged of 103; clean scans
+cleared of 387):
+
+| Scans viewed | Strokes only | + absent decisions as clean scans | + lesion crops held at half |
+|---|---|---|---|
+| 25 | 0.47; 48; 197 | 0.53; 79; 119 | 0.52; 99; 34 |
+| 50 | 0.59; 97; 28 | 0.57; 91; 67 | 0.58; 87; 99 |
+| 100 | 0.63; 100; 21 | 0.64; 78; 173 | 0.68; 80; 188 |
+| 150 | 0.78; 93; 118 | 0.72; 55; 328 | 0.73; 92; 150 |
+| 200 | 0.75 [0.69, 0.81]; 82; 182 | 0.75 [0.69, 0.80]; 67; 300 | 0.78 [0.73, 0.83]; 80; 242 |
+
+Model on screen after 200 scans (67 minutes), 0.5 cut-off, seed 0 / seed 1 /
+seed 2, then the average over the three seeds. The interval resamples
+patients, with the same resample applied to every run; it covers which
+patients were held out, not what a fourth seed would add, so read it beside
+the three per-seed values.
+
+| Setting | AUROC | Lesion scans flagged (of 103) | Clean scans cleared (of 387) | False blobs per clean scan | Clinician marks found | Lesion scans with no blob at any cut-off |
+|---|---|---|---|---|---|---|
+| Strokes only | 0.70 / 0.69 / 0.75; mean 0.71 [0.67, 0.76] | 92 / 92 / 82; 86% [81, 91] | 102 / 135 / 182; 36% [32, 40] | 3.6 / 4.5 / 1.5; mean 3.2 | 68% | 0 / 0 / 0 |
+| + absent decisions as clean scans | 0.78 / 0.78 / 0.75; mean 0.77 [0.72, 0.81] | 69 / 62 / 67; 64% [55, 73] | 293 / 342 / 300; 81% [77, 84] | 0.33 / 0.15 / 0.28; mean 0.25 | 60% | 14 / 30 / 25; mean 23 |
+| + lesion crops held at half | 0.84 / 0.78 / 0.78; mean 0.80 [0.76, 0.84] | 91 / 87 / 80; 83% [77, 90] | 277 / 241 / 242; 65% [62, 70] | 0.38 / 0.56 / 0.50; mean 0.48 | 78% | 7 / 9 / 8; mean 8 |
+
+Paired differences on the same sessions at 200 scans, seed 0 / seed 1 /
+seed 2, then the average over seeds with its patient-level interval:
+
+| Comparison | AUROC | Lesion scans flagged, points | Clean scans cleared, points | Lesion scans with no blob at any cut-off |
+|---|---|---|---|---|
+| Full setting minus strokes only | +0.14 / +0.09 / +0.04; mean +0.09 [+0.06, +0.12] | -1 / -5 / -2; mean -3 [-8, +2] | +45 / +27 / +15; mean +29 [+25, +34] | +7 / +9 / +8 |
+| Clean scans alone minus strokes only | +0.08 / +0.09 / 0.00; mean +0.06 [+0.01, +0.09] | -22 / -29 / -15; mean -22 [-30, -15] | +49 / +53 / +30; mean +44 [+40, +50] | +14 / +30 / +25 |
+| Fixed half minus adaptive share | +0.07 / 0.00 / +0.04; mean +0.04 [0.00, +0.07] | +21 / +24 / +13; mean +19 [+13, +26] | -4 / -26 / -15; mean -15 [-18, -12] | -7 / -21 / -17 |
+
+On seed 2 alone: full setting minus strokes only, AUROC +0.04 [-0.01, +0.08],
+flagged -2 points [-10, +5], cleared +15 points [+9, +22]; clean scans alone
+minus strokes only, 0.00 [-0.06, +0.05], -15 points [-24, -5], +30 points
+[+24, +37]; fixed half minus adaptive, +0.04 [-0.02, +0.10], +13 points
+[+3, +22], -15 points [-21, -9].
+
+What holds on all three seeds:
+
+- **The full setting clears more clean scans than strokes alone and flags
+  about as many lesion scans.** 15 to 45 points more cleared (mean +29),
+  0.4 to 0.6 false blobs on a clean scan instead of 1.5 to 4.5, and a
+  difference in lesion scans flagged that is not significant on any seed
+  (mean -3 points [-8, +2]). It also finds more of the clinician's marks
+  (78% against 68%, +10 points [+5, +15]).
+- **Clean scans alone lose lesion scans, and the fixed half gets them back.**
+  Without the fixed half, 15 to 29 points fewer lesion scans are flagged than
+  with strokes alone and 14 to 30 hold no blob at any cut-off; with it, 13 to
+  24 points come back and 7 to 9 stay blank, for 4 to 26 points of clearing.
+- **The fixed half costs no ranking** (+0.07, 0.00, +0.04).
+
+What the third seed changes:
+
+- **The ranking gain over strokes alone is smaller than two seeds suggested.**
+  Strokes only did better on seed 2 (AUROC 0.75, 182 clean scans cleared) than
+  on seeds 0 and 1, and on that seed the full setting's ranking gain is +0.04
+  with an interval that includes zero. Over three seeds it is +0.09
+  [+0.06, +0.12]; quote that, not the +0.14 of seed 0.
+- **Seed 0 was the high run of the full setting.** Seeds 1 and 2 agree (AUROC
+  0.78 both, 241 and 242 clean scans cleared); the three-seed figure is AUROC
+  0.80, 83% of lesion scans flagged and 65% of clean scans cleared.
+- **Lesion scans flagged at 0.5 also varies between runs**: 91, 87 and 80 for
+  the full setting (seed 2 minus seed 0, -11 points [-19, -3]), and 92, 92
+  and 82 for strokes only.
+- **Strokes only is the least repeatable row for clearing**: 102, 135 and 182
+  of 387.
+
+Earlier in the session, averaged over the three seeds (AUROC; lesion scans
+flagged; clean scans cleared):
+
+| Scans viewed | Strokes only | + absent decisions as clean scans | + lesion crops held at half | Full setting minus strokes only, AUROC |
+|---|---|---|---|---|
+| 25 | 0.48; 73%; 25% | 0.54; 85%; 19% | 0.50; 96%; 5% | +0.02 [-0.03, +0.06] |
+| 50 | 0.55; 98%; 2% | 0.59; 85%; 20% | 0.59; 81%; 29% | +0.04 [0.00, +0.08] |
+| 100 | 0.60; 95%; 7% | 0.63; 68%; 50% | 0.71; 86%; 43% | +0.12 [+0.08, +0.15] |
+| 150 | 0.72; 93%; 21% | 0.75; 63%; 81% | 0.77; 84%; 56% | +0.06 [+0.02, +0.09] |
+| 200 | 0.71; 86%; 36% | 0.77; 64%; 81% | 0.80; 83%; 65% | +0.09 [+0.06, +0.12] |
+
+No setting ranks better than chance at 25 scans, and all three sit at 0.55 to
+0.59 at 50; the settings separate from 100 scans (33 minutes) on. The picture
+at the 0.5 cut-off is still unsteady within a session on seed 2 (full setting:
+lesion scans flagged 99, 87, 80, 92, 80; clean scans cleared 34, 99, 188, 150,
+242). Both are the open points named above (trainer speed in the first 17
+minutes; a model on screen chosen on few validation lesion scans), not
+questions about the setting.
 
 **Is the weak start a shortage of training time or of annotations?**
 (`replay_sparse_absent_fg50_first50_retfound_rfa`, 2026-11-14: the seed-0
