@@ -66,19 +66,66 @@ def get_annot_duration_s(events, fname):
 
 
 def events_from_client_log(client_log_fpath):
-    lines = open(client_log_fpath).readlines()
+    """Events of the client log that belong to a file.
+
+    Lines that name no file (for example ``automatic_start_training``), and
+    lines that are not events at all, are skipped. Before this they raised an
+    error, which stopped the metrics plot and export in any project whose
+    training had started automatically.
+    """
+    with open(client_log_fpath) as log_file:
+        lines = log_file.readlines()
     events = []
     for l in lines:
         parts = l.strip().split(',')
-        event_time = parts[1]
+        if len(parts) < 3:
+            continue
+        fname_parts = [p for p in parts if p.startswith('fname:')]
+        if not fname_parts:
+            continue
+        try:
+            event_time = float(parts[1])
+        except ValueError:
+            continue
         event_name = parts[2]
-        fname = [p for p in parts if 'fname:' in p][0].replace('fname:', '')
+        fname = fname_parts[0].replace('fname:', '', 1)
         # because load image has .jpg name (perhaps) but save annotation has png
         # so let's just work with the file name without the extension.
-        fname = os.path.splitext(fname)[0] 
-        events.append(Event(name=event_name, fname=fname, time=float(event_time)))
+        fname = os.path.splitext(fname)[0]
+        events.append(Event(name=event_name, fname=fname, time=event_time))
 
     return events
+
+
+def screen_time_per_fname_s(events, pause_s=120.0):
+    """Time each file was on screen: ``{fname: (seconds, visits, paused_s)}``.
+
+    A file is on screen from its ``update_file_end`` event until the next
+    ``update_file_end`` of any file (the last one, until the last logged
+    event). Unlike ``get_annot_duration_s`` this includes time spent looking
+    without painting, which is most of the time on a scan with nothing to
+    correct. A gap of more than ``pause_s`` seconds between two consecutive
+    logged events is taken as time away from the screen and is reported
+    separately, not counted.
+    """
+    totals = {}
+    current = None
+    previous_time = None
+    for event in sorted(events, key=lambda e: e.time):
+        if current is not None:
+            gap = event.time - previous_time
+            seconds, visits, paused = totals[current]
+            if gap > pause_s:
+                paused += gap
+            else:
+                seconds += gap
+            totals[current] = (seconds, visits, paused)
+        if event.name == 'update_file_end':
+            current = event.fname
+            seconds, visits, paused = totals.get(current, (0.0, 0, 0.0))
+            totals[current] = (seconds, visits + 1, paused)
+        previous_time = event.time
+    return totals
 
 
 def interaction_time_per_fname_s(client_log_fpath):

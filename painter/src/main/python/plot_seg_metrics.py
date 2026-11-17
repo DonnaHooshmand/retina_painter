@@ -30,8 +30,14 @@ from PyQt5 import QtWidgets
 from PyQt5 import QtCore
 from skimage.io import imread
 from progress_widget import BaseProgressWidget
-from interaction_time import events_from_client_log 
+from interaction_time import events_from_client_log
 from interaction_time import get_annot_duration_s
+from interaction_time import screen_time_per_fname_s
+from annotation_effort import (STROKES_FROM_ANNOTATION,
+                               STROKES_FROM_REVIEW_SNAPSHOT, NO_STROKES,
+                               painted_strokes, project_settings,
+                               stroke_pixel_counts)
+from review_utils import load_review_document
 
 
 def moving_average(x_vals, y_vals, w):
@@ -107,8 +113,37 @@ def load_annot_events(proj_dir):
     return annot_events
 
 
-def compute_seg_metrics(seg_dir, annot_dir, fname, model_dir, annot_events=None):
-    
+def load_effort_context(proj_dir, annot_events=None):
+    """What ``compute_seg_metrics`` needs to report the user's own effort.
+
+    Read once per export: whether the project counts absent scans as clean
+    scans, its review records, and how long each scan was on screen.
+    """
+    try:
+        absent_as_background = bool(project_settings(proj_dir).get(
+            'absent_scans_as_background', False))
+    except (OSError, ValueError):
+        absent_as_background = False
+    return {
+        'proj_dir': proj_dir,
+        'absent_scans_as_background': absent_as_background,
+        'reviews': load_review_document(proj_dir)['reviews'],
+        'screen_times': (screen_time_per_fname_s(annot_events)
+                         if annot_events else {}),
+    }
+
+
+def compute_seg_metrics(seg_dir, annot_dir, fname, model_dir, annot_events=None,
+                        effort_context=None):
+    """Metrics for one image, or None when it has no segmentation.
+
+    ``annot_fg`` and ``annot_bg`` count the pixels the user painted. With an
+    ``effort_context`` (see ``load_effort_context``) a scan reviewed as absent
+    in a project that counts absent scans as clean scans reports the strokes
+    kept with its review, not the whole-scan background written for the
+    trainer, and ``strokes_source`` says which file was counted.
+    """
+    image_fname = fname
     # annot and seg are both PNG
     fname = os.path.splitext(fname)[0] + '.png'
     seg_path = os.path.join(seg_dir, fname)
@@ -134,8 +169,23 @@ def compute_seg_metrics(seg_dir, annot_dir, fname, model_dir, annot_events=None)
     corrected[foreground > 0] = 1
     corrected[background > 0] = 0
 
+    fg_labels, bg_labels = np.sum(foreground > 0), np.sum(background > 0)
+    strokes_source = (STROKES_FROM_ANNOTATION if os.path.isfile(annot_path)
+                      else NO_STROKES)
+    if effort_context is not None:
+        strokes_path, strokes_source = painted_strokes(
+            effort_context['proj_dir'], image_fname,
+            effort_context['reviews'].get(image_fname),
+            effort_context['absent_scans_as_background'])
+        if strokes_source == STROKES_FROM_REVIEW_SNAPSHOT:
+            # The annotation file is the whole-scan background written for
+            # the trainer. It still defines the corrected segmentation above,
+            # but it is not what the user painted.
+            fg_labels, bg_labels = stroke_pixel_counts(strokes_path)
+
     corrected_segmentation_metrics = compute_metrics_from_masks(
-        seg, corrected, np.sum(foreground > 0), np.sum(background > 0))
+        seg, corrected, fg_labels, bg_labels)
+    corrected_segmentation_metrics['strokes_source'] = strokes_source
 
     corrected_segmentation_metrics['seg_time'] = os.path.getmtime(seg_path)
 
@@ -146,7 +196,11 @@ def compute_seg_metrics(seg_dir, annot_dir, fname, model_dir, annot_events=None)
         annot_duration_s, clicks = get_annot_duration_s(annot_events, fname)
         corrected_segmentation_metrics['annot_duration_s'] = annot_duration_s
         corrected_segmentation_metrics['clicks'] = clicks
-    
+        screen_times = (effort_context['screen_times'] if effort_context
+                        else screen_time_per_fname_s(annot_events))
+        corrected_segmentation_metrics['screen_time_s'] = screen_times.get(
+            os.path.splitext(fname)[0], (0.0, 0, 0.0))[0]
+
     return corrected_segmentation_metrics
 
 
@@ -195,22 +249,31 @@ class Thread(QtCore.QThread):
         start = time.time()
         # load the annotation events first (and once)
         annot_events = load_annot_events(self.proj_dir)
+        effort_context = load_effort_context(self.proj_dir, annot_events)
         cache_dict_path = os.path.join(self.proj_dir, 'metrics_cache.pkl')
         if os.path.isfile(cache_dict_path):
             cache_dict = pickle.load(open(cache_dict_path, 'rb'))
         else:
             cache_dict = {}
-        
+
         for i, fname in enumerate(self.fnames):
             self.progress_change.emit(i+1, len(self.fnames))
             cache_key = get_cache_key(fname)
             metrics = None
-            if cache_key in cache_dict: 
+            if cache_key in cache_dict:
                 metrics = cache_dict[cache_key]
                 # ignore cached metric if it does not include area error.
                 # This is because the cached metric is from an older version of RootPainter
                 # and we now need to recompute the metrics to include area error
                 if metrics and 'area_error' not in metrics:
+                    metrics = None
+                # likewise for metrics cached before the painted pixel counts
+                # followed the user's own strokes (strokes_source).
+                if metrics and 'strokes_source' not in metrics:
+                    metrics = None
+                # and for metrics cached before the project had an
+                # interaction log, which lack the time columns.
+                if metrics and annot_events and 'screen_time_s' not in metrics:
                     metrics = None
 
             # also recompute is metrics is None (even if found in cache) as None could indicate 
@@ -220,7 +283,8 @@ class Thread(QtCore.QThread):
             # recompute metrics, just incase the segmentation now exists.
             if metrics is None:
                 metrics = compute_seg_metrics(self.seg_dir, self.annot_dir,
-                                              fname, self.model_dir, annot_events)
+                                              fname, self.model_dir, annot_events,
+                                              effort_context)
                 cache_dict[cache_key] = metrics
     
             if metrics: 
@@ -298,11 +362,14 @@ by the model and the corrected segmentation, which includes the initial segmenta
 corrections assigned.
 
 The metrics saved to the CSV file include accuracy, tn (true negatives), fp (false positives),     
-tp (true positives), precision, recall, f1 (also known as dice score), annot_fg (number of pixels      
-annotated as foreground) and annot_bg (number of pixels annotated as background).
+tp (true positives), precision, recall, f1 (also known as dice score), annot_fg (number of pixels
+annotated as foreground) and annot_bg (number of pixels annotated as background). For a scan reviewed
+as absent in a project that counts absent scans as clean scans, these are the strokes you painted,
+not the whole scan (strokes_source says which file was counted).
 
-If an interaction log is found for the project then the estimated time spent interacting with each image 
-will be exported (annot_duration_s), and also the number of clicks (clicks).
+If an interaction log is found for the project then the estimated time spent interacting with each image
+will be exported (annot_duration_s), and also the number of clicks (clicks) and the time the image
+was on screen (screen_time_s).
 
 The metrics CSV will be saved in the project folder, with the CSV file path displayed on export 
 completion.
@@ -355,10 +422,12 @@ class MetricsPlot:
             cache_key = get_cache_key(fname)
 
             annot_events = load_annot_events(self.proj_dir)
-    
+
             metrics = compute_seg_metrics(seg_dir, annot_dir, fname,
                                           os.path.join(self.proj_dir, 'models'),
-                                          annot_events)
+                                          annot_events,
+                                          load_effort_context(self.proj_dir,
+                                                              annot_events))
             if metrics:
                 cache_dict[cache_key] = metrics
                 self.plot_window.add_point(fname, metrics)
